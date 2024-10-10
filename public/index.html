@@ -18,7 +18,14 @@
     </div>
     <input type="text" id="chatInput" placeholder="Type your message..." style="width:300px;">
     <button id="sendButton">Send</button>
-
+	
+	<!-- Screen Sharing Section -->
+    <h2>Screen Sharing</h2>
+    <button id="startStreamButton">Start Streaming</button>
+    <div id="screenContainer">
+        <video id="screenVideo" autoplay playsinline controls style="width:600px; height:400px; border:1px solid #ccc;"></video>
+    </div>
+	
     <script src="/socket.io/socket.io.js"></script>
     <script src="script.js"></script>
 </body>

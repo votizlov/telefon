@@ -22,6 +22,9 @@ app.use(express.static('public'));
 // List of connected users
 let users = [];
 
+// Variable to track if a stream is active
+let isStreamingActive = false;
+
 io.on('connection', (socket) => {
     console.log('A user connected:', socket.id);
     users.push(socket.id);
@@ -40,6 +43,28 @@ io.on('connection', (socket) => {
             signal: data.signal,
             from: socket.id,
         });
+    });
+	
+	// Handle screen sharing signals
+    socket.on('screenSignal', (data) => {
+        // If an offer is received and a stream is already active, deny the request
+        if (data.description && data.description.type === 'offer') {
+            if (isStreamingActive) {
+                // Notify the sender that streaming is denied
+                socket.emit('streamDenied', { message: 'A stream is already in progress.' });
+                return;
+            } else {
+                isStreamingActive = true;
+            }
+        }
+
+        // If the streamer disconnects or stops streaming
+        if (data.description && data.description.type === 'answer') {
+            // Streaming is accepted
+        }
+
+        // Relay the screen signal to all clients except the sender
+        socket.broadcast.emit('screenSignal', data);
     });
 
     socket.on('disconnect', () => {
