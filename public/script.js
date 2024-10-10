@@ -159,3 +159,35 @@ socket.on('signal', (data) => {
         peerConnection.addIceCandidate(new RTCIceCandidate(data.signal.candidate));
     }
 });
+
+// Add event listener for send button
+document.getElementById('sendButton').onclick = () => {
+    const messageInput = document.getElementById('chatInput');
+    const message = messageInput.value.trim();
+    if (message !== '') {
+        // Send message to server
+        socket.emit('chatMessage', {
+            from: yourId,
+            message: message,
+        });
+        // Add message to chat window
+        addMessageToChatWindow(`Me: ${message}`);
+        messageInput.value = '';
+    }
+};
+
+// Function to add message to chat window
+function addMessageToChatWindow(message) {
+    const chatWindow = document.getElementById('chatWindow');
+    const messageElement = document.createElement('div');
+    messageElement.textContent = message;
+    chatWindow.appendChild(messageElement);
+    // Scroll to the bottom
+    chatWindow.scrollTop = chatWindow.scrollHeight;
+}
+
+// Listen for incoming chat messages
+socket.on('chatMessage', (data) => {
+    // Display message in chat window
+    addMessageToChatWindow(`${data.from}: ${data.message}`);
+});

@@ -11,6 +11,14 @@
     <ul id="users"></ul>
     <button id="callButton">Call Selected User</button>
 
+<!-- Chat window -->
+    <h2>Chat</h2>
+    <div id="chatWindow" style="border:1px solid #ccc; width:300px; height:200px; overflow-y:scroll; padding:5px;">
+        <!-- Messages will appear here -->
+    </div>
+    <input type="text" id="chatInput" placeholder="Type your message..." style="width:300px;">
+    <button id="sendButton">Send</button>
+
     <script src="/socket.io/socket.io.js"></script>
     <script src="script.js"></script>
 </body>

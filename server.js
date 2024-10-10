@@ -26,6 +26,12 @@ io.on('connection', (socket) => {
     console.log('A user connected:', socket.id);
     users.push(socket.id);
     io.emit('userList', users);
+	
+	// Handle chat messages
+    socket.on('chatMessage', (data) => {
+        // Broadcast message to all clients except the sender
+        socket.broadcast.emit('chatMessage', data);
+    });
 
     // Relay signals between users
     socket.on('signal', (data) => {
