@@ -42,9 +42,9 @@ socket.on('userList', (users) => {
 function selectUser(event) {
     const selectedUserId = event.target.dataset.id;
     document.querySelectorAll('#users li').forEach((li) => {
-        li.style.fontWeight = 'normal';
+        li.classList.remove('selected');
     });
-    event.target.style.fontWeight = 'bold';
+    event.target.classList.add('selected');
     document.getElementById('callButton').dataset.target = selectedUserId;
 }
 

@@ -3,27 +3,47 @@
 <head>
     <meta charset="UTF-8">
     <title>Simple Voice Chat</title>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <h1>Simple Voice Chat</h1>
-    <p>Your ID: <span id="yourId">Connecting...</span></p>
-    <p>Connected Users:</p>
-    <ul id="users"></ul>
-    <button id="callButton">Call Selected User</button>
+    <div id="app">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="app-title">Voice Chat App</div>
+            <div class="user-info">
+                <p>Your ID:</p>
+                <span id="yourId">Connecting...</span>
+            </div>
+            <div class="user-list">
+                <p>Connected Users:</p>
+                <ul id="users"></ul>
+            </div>
+            <button id="callButton" class="btn">Call Selected User</button>
+            <button id="startStreamButton" class="btn">Start Streaming</button>
+        </div>
 
-<!-- Chat window -->
-    <h2>Chat</h2>
-    <div id="chatWindow" style="border:1px solid #ccc; width:300px; height:200px; overflow-y:scroll; padding:5px;">
-        <!-- Messages will appear here -->
-    </div>
-    <input type="text" id="chatInput" placeholder="Type your message..." style="width:300px;">
-    <button id="sendButton">Send</button>
-	
-	<!-- Screen Sharing Section -->
-    <h2>Screen Sharing</h2>
-    <button id="startStreamButton">Start Streaming</button>
-    <div id="screenContainer">
-        <video id="screenVideo" autoplay playsinline controls style="width:600px; height:400px; border:1px solid #ccc;"></video>
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Chat Section -->
+            <div class="chat-section">
+                <div class="chat-header">Chat</div>
+                <div id="chatWindow" class="chat-window">
+                    <!-- Messages will appear here -->
+                </div>
+                <div class="chat-input">
+                    <input type="text" id="chatInput" placeholder="Type your message...">
+                    <button id="sendButton" class="btn">Send</button>
+                </div>
+            </div>
+
+            <!-- Screen Sharing Section -->
+            <div class="screen-sharing-section">
+                <div class="screen-header">Screen Sharing</div>
+                <div id="screenContainer" class="screen-container">
+                    <video id="screenVideo" autoplay playsinline controls></video>
+                </div>
+            </div>
+        </div>
     </div>
 	
     <script src="/socket.io/socket.io.js"></script>
