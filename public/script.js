@@ -2,6 +2,7 @@
 
 const socket = io.connect(window.location.hostname + ':3000', { secure: true });
 const AUDIO_MODE_STORAGE_KEY = 'telefon.audioMode';
+const NICKNAME_STORAGE_KEY = 'telefon.nickname';
 const AUDIO_MODE_VOICE_ACTIVATED = 'voice-activated';
 const AUDIO_MODE_PUSH_TO_TALK = 'push-to-talk';
 const VOICE_ACTIVITY_THRESHOLD = 0.035;
@@ -15,6 +16,10 @@ const pushToTalkButton = document.getElementById('pushToTalkButton');
 const audioStatusElement = document.getElementById('audioStatus');
 const settingsHintElement = document.getElementById('settingsHint');
 const audioModeInputs = document.querySelectorAll('input[name="audioMode"]');
+const nicknameInput = document.getElementById('nicknameInput');
+const screenSharingSection = document.getElementById('screenSharingSection');
+const screenHeaderElement = document.getElementById('screenHeader');
+const screenVideoElement = document.getElementById('screenVideo');
 
 muteButton.disabled = true;
 pushToTalkButton.disabled = true;
@@ -29,7 +34,9 @@ let yourId = null;
 let isStreaming = false;
 let screenStream = null;
 let screenPeerConnection = null;
+let activeStreamerId = null;
 let audioMode = loadAudioMode();
+let nickname = loadNickname();
 let isMuted = false;
 let isPushToTalkActive = false;
 let isVoiceDetected = false;
@@ -43,8 +50,11 @@ let mediaInitializationComplete = false;
 let lastBroadcastSpeakingState = false;
 
 applyStoredAudioMode();
+applyStoredNickname();
 bindAudioControls();
 updateMicrophoneState(true);
+updateOwnIdentityDisplay();
+updateScreenSharingUi();
 
 // Get audio stream from the user's microphone
 navigator.mediaDevices.getUserMedia({ audio: true, video: false })
@@ -78,11 +88,12 @@ socket.on('connect', () => {
     }
 
     yourId = socket.id;
-    connectedUsers = connectedUsers.filter((userId) => userId !== yourId);
+    connectedUsers = connectedUsers.filter((user) => user.id !== yourId);
     speakingUsers.delete(yourId);
     lastBroadcastSpeakingState = false;
-    yourIdElement.textContent = yourId;
+    updateOwnIdentityDisplay();
     updateSpeakingIndicators();
+    socket.emit('setNickname', nickname);
     if (mediaInitializationComplete) {
         broadcastSpeakingState(getShouldTransmitAudio());
         syncPeerConnections();
@@ -91,11 +102,13 @@ socket.on('connect', () => {
 
 // Update the list of connected users
 socket.on('userList', (users) => {
-    connectedUsers = users.filter((userId) => userId !== yourId);
+    connectedUsers = users.filter((user) => user.id !== yourId);
     speakingUsers = new Set(
-        Array.from(speakingUsers).filter((userId) => connectedUsers.includes(userId))
+        Array.from(speakingUsers).filter((userId) => connectedUsers.some((user) => user.id === userId))
     );
     renderUserList();
+    updateOwnIdentityDisplay();
+    updateScreenSharingUi();
 
     if (mediaInitializationComplete) {
         syncPeerConnections();
@@ -116,15 +129,77 @@ socket.on('speakingState', (data) => {
     updateSpeakingIndicators();
 });
 
+socket.on('streamState', (data) => {
+    activeStreamerId = data && data.isActive ? data.streamerId : null;
+
+    if (!activeStreamerId && !isStreaming) {
+        clearRemoteScreenShare();
+    }
+
+    updateScreenSharingUi();
+});
+
+socket.on('screenShareStopped', () => {
+    if (!isStreaming) {
+        clearRemoteScreenShare();
+    }
+    activeStreamerId = null;
+    updateScreenSharingUi();
+});
+
 function renderUserList() {
     usersListElement.innerHTML = '';
-    connectedUsers.forEach((userId) => {
+    connectedUsers.forEach((user) => {
         const li = document.createElement('li');
-        li.dataset.id = userId;
-        li.textContent = userId;
-        li.classList.toggle('speaking-user', speakingUsers.has(userId));
+        li.dataset.id = user.id;
+        li.textContent = getDisplayName(user.id);
+        li.title = user.id;
+        li.classList.toggle('speaking-user', speakingUsers.has(user.id));
         usersListElement.appendChild(li);
     });
+}
+
+function loadNickname() {
+    try {
+        return (localStorage.getItem(NICKNAME_STORAGE_KEY) || '').trim().slice(0, 24);
+    } catch (error) {
+        console.error('Error reading nickname from local storage.', error);
+        return '';
+    }
+}
+
+function saveNickname(value) {
+    try {
+        localStorage.setItem(NICKNAME_STORAGE_KEY, value);
+    } catch (error) {
+        console.error('Error saving nickname to local storage.', error);
+    }
+}
+
+function applyStoredNickname() {
+    nicknameInput.value = nickname;
+}
+
+function getUserById(userId) {
+    return connectedUsers.find((user) => user.id === userId) || null;
+}
+
+function getDisplayName(userId) {
+    if (!userId) {
+        return '';
+    }
+
+    if (userId === yourId) {
+        return nickname || userId;
+    }
+
+    const user = getUserById(userId);
+    return (user && user.nickname) || userId;
+}
+
+function updateOwnIdentityDisplay() {
+    yourIdElement.textContent = nickname || yourId || 'Connecting...';
+    yourIdElement.title = yourId || '';
 }
 
 function loadAudioMode() {
@@ -155,6 +230,22 @@ function applyStoredAudioMode() {
 }
 
 function bindAudioControls() {
+    nicknameInput.addEventListener('input', (event) => {
+        nickname = event.target.value.trim().slice(0, 24);
+        if (event.target.value !== nickname) {
+            event.target.value = nickname;
+        }
+
+        saveNickname(nickname);
+        updateOwnIdentityDisplay();
+        renderUserList();
+        updateScreenSharingUi();
+
+        if (socket.connected) {
+            socket.emit('setNickname', nickname);
+        }
+    });
+
     audioModeInputs.forEach((input) => {
         input.addEventListener('change', (event) => {
             audioMode = event.target.value;
@@ -346,6 +437,32 @@ function updateSpeakingIndicators() {
     });
 }
 
+function updateScreenSharingUi() {
+    const isScreenVisible = isStreaming || Boolean(activeStreamerId);
+    screenSharingSection.classList.toggle('hidden', !isScreenVisible);
+
+    if (!isScreenVisible) {
+        screenHeaderElement.textContent = 'Screen Sharing';
+        return;
+    }
+
+    if (isStreaming) {
+        screenHeaderElement.textContent = 'Screen Sharing - You';
+        return;
+    }
+
+    screenHeaderElement.textContent = `Screen Sharing - ${getDisplayName(activeStreamerId)}`;
+}
+
+function clearRemoteScreenShare() {
+    if (screenPeerConnection) {
+        screenPeerConnection.close();
+        screenPeerConnection = null;
+    }
+
+    screenVideoElement.srcObject = null;
+}
+
 function updateAudioUi(shouldTransmit, force = false) {
     let statusText = 'Initializing microphone...';
 
@@ -388,7 +505,7 @@ function syncPeerConnections() {
         return;
     }
 
-    const activeUsers = new Set(connectedUsers);
+    const activeUsers = new Set(connectedUsers.map((user) => user.id));
 
     Object.keys(peerConnections).forEach((remoteUserId) => {
         if (!activeUsers.has(remoteUserId)) {
@@ -396,7 +513,8 @@ function syncPeerConnections() {
         }
     });
 
-    connectedUsers.forEach((remoteUserId) => {
+    connectedUsers.forEach((user) => {
+        const remoteUserId = user.id;
         if (!peerConnections[remoteUserId]) {
             const peerConnection = createPeerConnection(remoteUserId);
             peerConnections[remoteUserId] = peerConnection;
@@ -525,6 +643,7 @@ document.getElementById('sendButton').onclick = () => {
         // Send message to server
         socket.emit('chatMessage', {
             from: yourId,
+            nickname,
             message: message,
         });
         // Add message to chat window
@@ -546,7 +665,8 @@ function addMessageToChatWindow(message) {
 // Listen for incoming chat messages
 socket.on('chatMessage', (data) => {
     // Display message in chat window
-    addMessageToChatWindow(`${data.from}: ${data.message}`);
+    const author = data.nickname || getDisplayName(data.from);
+    addMessageToChatWindow(`${author}: ${data.message}`);
 });
 
 // Add event listener to the Start Streaming button
@@ -568,11 +688,12 @@ function startScreenSharing() {
         .then((stream) => {
             screenStream = stream;
             isStreaming = true;
+            activeStreamerId = yourId;
             startStreamButton.textContent = 'Stop Streaming';
+            updateScreenSharingUi();
 
             // Display the local screen stream
-            const screenVideo = document.getElementById('screenVideo');
-            screenVideo.srcObject = screenStream;
+            screenVideoElement.srcObject = screenStream;
 
             // Set up peer connection for screen sharing
             const configuration = {
@@ -628,13 +749,19 @@ function stopScreenSharing() {
     if (screenStream) {
         screenStream.getTracks().forEach((track) => track.stop());
     }
+    if (isStreaming && socket.connected) {
+        socket.emit('stopScreenShare');
+    }
     if (screenPeerConnection) {
         screenPeerConnection.close();
         screenPeerConnection = null;
     }
+    screenStream = null;
     isStreaming = false;
+    activeStreamerId = null;
     startStreamButton.textContent = 'Start Streaming';
-    document.getElementById('screenVideo').srcObject = null;
+    screenVideoElement.srcObject = null;
+    updateScreenSharingUi();
 }
 
 // Listen for incoming screen signals
@@ -655,8 +782,7 @@ socket.on('screenSignal', async (data) => {
 
         // Handle remote track
         screenPeerConnection.ontrack = (event) => {
-            const screenVideo = document.getElementById('screenVideo');
-            screenVideo.srcObject = event.streams[0];
+            screenVideoElement.srcObject = event.streams[0];
         };
 
         // Handle ICE candidates
@@ -674,6 +800,8 @@ socket.on('screenSignal', async (data) => {
         if (data.description) {
             const description = data.description;
             if (description.type === 'offer') {
+                activeStreamerId = data.from;
+                updateScreenSharingUi();
                 await screenPeerConnection.setRemoteDescription(description);
                 const answer = await screenPeerConnection.createAnswer();
                 await screenPeerConnection.setLocalDescription(answer);

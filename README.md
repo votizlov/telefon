@@ -6,6 +6,7 @@ Telefon is a small browser-based voice chat app built with Node.js, Express, Soc
 - a shared text chat
 - screen sharing, limited to one active stream at a time
 - user-controlled microphone modes with persistent local settings
+- local nicknames that are shown to other connected users
 
 The server entrypoint is `server.js`. The frontend lives in `public/index.html` and `public/script.js`.
 
@@ -24,10 +25,10 @@ This app is functional, but it has a few deployment-relevant constraints:
 - A normal TLS-terminating reverse proxy on port `443` is not enough by itself, because the browser still tries to open Socket.IO/WebRTC signaling on port `3000`.
 - TLS certificate files must be present as `key.pem` and `cert.pem` in the project root.
 - Only one screen-sharing session is allowed at a time.
-- There is no authentication, multiple-room system, or user-friendly naming. All users join the same room and are identified by Socket.IO IDs.
+- There is no authentication or multiple-room system. All users join the same room.
 - STUN is configured, but there is no TURN server, so some users behind strict NAT/firewalls may not connect reliably.
-- The server keeps `isStreamingActive` set once a stream offer starts, and it is not reset on disconnect. If screen sharing gets stuck, restarting the app clears that state.
 - Voice mode selection is stored in the browser with `localStorage`, so it is per device/browser, not per account.
+- Nicknames are stored in the browser with `localStorage`, so they are per device/browser, not per account.
 
 ## Requirements
 
@@ -173,7 +174,7 @@ If you are not using `systemd`, restart the app with whatever process manager yo
 
 1. Open `https://your-server-hostname:3000`.
 2. Allow microphone access when the browser asks.
-3. Wait until your Socket.IO ID appears in the sidebar.
+3. Set a nickname in the bottom-left settings area if you want one displayed to other users.
 
 ### Join the voice room
 
@@ -183,24 +184,26 @@ If you are not using `systemd`, restart the app with whatever process manager yo
 
 ### Control your microphone
 
-1. Use `Mute Mic` to fully mute or unmute your microphone.
-2. In the bottom-left `Voice Settings` section, choose `Voice Activated` or `Push to Talk`.
-3. `Voice Activated` transmits only when the browser detects speech.
-4. `Push to Talk` stores your preference locally and requires holding `Space` or the on-screen `Hold to Talk` button to transmit.
+1. Set your nickname in the bottom-left `Voice Settings` section. Other users will see that name instead of your raw socket ID.
+2. Use `Mute Mic` to fully mute or unmute your microphone.
+3. In the bottom-left `Voice Settings` section, choose `Voice Activated` or `Push to Talk`.
+4. `Voice Activated` transmits only when the browser detects speech.
+5. `Push to Talk` stores your preference locally and requires holding `Space` or the on-screen `Hold to Talk` button to transmit.
 
 ### Send chat messages
 
 1. Type a message in the chat input.
 2. Click `Send`.
-3. Your own message appears as `Me: ...`; remote messages show the sender's ID.
+3. Your own message appears as `Me: ...`; remote messages show the sender's nickname when available.
 
 ### Share your screen
 
 1. Click `Start Streaming`.
 2. Choose a screen or window in the browser prompt.
-3. The local preview appears in the screen area.
-4. Other connected users receive the stream automatically.
-5. Click `Stop Streaming` to end it.
+3. The screen-sharing panel appears only while a screen share is active.
+4. The local preview appears in the screen area while you are sharing.
+5. Other connected users receive the stream automatically.
+6. Click `Stop Streaming` to end it.
 
 ## Operating notes
 

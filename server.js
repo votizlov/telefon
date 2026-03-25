@@ -21,14 +21,40 @@ app.use(express.static('public'));
 
 // List of connected users
 let users = [];
+let nicknames = {};
 
 // Variable to track if a stream is active
 let isStreamingActive = false;
+let activeStreamerId = null;
+
+function getUsersPayload() {
+    return users.map((id) => ({
+        id,
+        nickname: nicknames[id] || '',
+    }));
+}
+
+function broadcastUsers() {
+    io.emit('userList', getUsersPayload());
+}
+
+function broadcastStreamState() {
+    io.emit('streamState', {
+        isActive: isStreamingActive,
+        streamerId: activeStreamerId,
+        nickname: activeStreamerId ? (nicknames[activeStreamerId] || '') : '',
+    });
+}
 
 io.on('connection', (socket) => {
     console.log('A user connected:', socket.id);
     users.push(socket.id);
-    io.emit('userList', users);
+    broadcastUsers();
+    socket.emit('streamState', {
+        isActive: isStreamingActive,
+        streamerId: activeStreamerId,
+        nickname: activeStreamerId ? (nicknames[activeStreamerId] || '') : '',
+    });
 	
 	// Handle chat messages
     socket.on('chatMessage', (data) => {
@@ -51,6 +77,13 @@ io.on('connection', (socket) => {
             isSpeaking: Boolean(isSpeaking),
         });
     });
+
+    socket.on('setNickname', (nickname) => {
+        const normalizedNickname = typeof nickname === 'string' ? nickname.trim().slice(0, 24) : '';
+        nicknames[socket.id] = normalizedNickname;
+        broadcastUsers();
+        broadcastStreamState();
+    });
 	
 	// Handle screen sharing signals
     socket.on('screenSignal', (data) => {
@@ -62,6 +95,8 @@ io.on('connection', (socket) => {
                 return;
             } else {
                 isStreamingActive = true;
+                activeStreamerId = socket.id;
+                broadcastStreamState();
             }
         }
 
@@ -74,10 +109,28 @@ io.on('connection', (socket) => {
         socket.broadcast.emit('screenSignal', data);
     });
 
+    socket.on('stopScreenShare', () => {
+        if (activeStreamerId === socket.id) {
+            isStreamingActive = false;
+            activeStreamerId = null;
+            socket.broadcast.emit('screenShareStopped', { from: socket.id });
+            broadcastStreamState();
+        }
+    });
+
     socket.on('disconnect', () => {
         console.log('User disconnected:', socket.id);
         users = users.filter((id) => id !== socket.id);
-        io.emit('userList', users);
+        delete nicknames[socket.id];
+
+        if (activeStreamerId === socket.id) {
+            isStreamingActive = false;
+            activeStreamerId = null;
+            socket.broadcast.emit('screenShareStopped', { from: socket.id });
+        }
+
+        broadcastUsers();
+        broadcastStreamState();
     });
 });
 

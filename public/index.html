@@ -11,7 +11,7 @@
         <div class="sidebar">
             <div class="app-title">Voice Chat App</div>
             <div class="user-info">
-                <p>Your ID:</p>
+                <p>Your Name:</p>
                 <span id="yourId">Connecting...</span>
             </div>
             <div class="user-list">
@@ -25,6 +25,8 @@
 
             <div class="settings-panel">
                 <div class="settings-title">Voice Settings</div>
+                <label class="settings-label" for="nicknameInput">Nickname</label>
+                <input id="nicknameInput" class="settings-input" type="text" maxlength="24" placeholder="Set your nickname">
                 <label class="setting-option" for="modeVoiceActivated">
                     <input id="modeVoiceActivated" type="radio" name="audioMode" value="voice-activated">
                     <span>Voice Activated</span>
@@ -52,8 +54,8 @@
             </div>
 
             <!-- Screen Sharing Section -->
-            <div class="screen-sharing-section">
-                <div class="screen-header">Screen Sharing</div>
+            <div id="screenSharingSection" class="screen-sharing-section hidden">
+                <div id="screenHeader" class="screen-header">Screen Sharing</div>
                 <div id="screenContainer" class="screen-container">
                     <video id="screenVideo" autoplay playsinline controls></video>
                 </div>
