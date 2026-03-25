@@ -27,6 +27,14 @@
                 <div class="settings-title">Voice Settings</div>
                 <label class="settings-label" for="nicknameInput">Nickname</label>
                 <input id="nicknameInput" class="settings-input" type="text" maxlength="24" placeholder="Set your nickname">
+                <div id="desktopConnectionSettings" class="desktop-only">
+                    <label class="settings-label" for="serverUrlInput">Server URL</label>
+                    <input id="serverUrlInput" class="settings-input" type="url" placeholder="https://voice.example.com:3000">
+                </div>
+                <div id="desktopPushToTalkSettings" class="desktop-only">
+                    <label class="settings-label" for="pushToTalkHotkeyInput">Desktop Push-to-Talk Hotkey</label>
+                    <input id="pushToTalkHotkeyInput" class="settings-input" type="text" placeholder="Press a hotkey combination">
+                </div>
                 <label class="setting-option" for="modeVoiceActivated">
                     <input id="modeVoiceActivated" type="radio" name="audioMode" value="voice-activated">
                     <span>Voice Activated</span>
@@ -63,7 +71,7 @@
         </div>
     </div>
 	
-    <script src="/socket.io/socket.io.js"></script>
+    <script src="vendor/socket.io.min.js"></script>
     <script src="script.js"></script>
 </body>
 </html>

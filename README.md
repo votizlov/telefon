@@ -7,8 +7,14 @@ Telefon is a small browser-based voice chat app built with Node.js, Express, Soc
 - screen sharing, limited to one active stream at a time
 - user-controlled microphone modes with persistent local settings
 - local nicknames that are shown to other connected users
+- an Electron desktop client with native global push-to-talk support
 
 The server entrypoint is `server.js`. The frontend lives in `public/index.html` and `public/script.js`.
+
+The project now has two runtime modes:
+
+- Linux server: the shared HTTPS + Socket.IO signaling server from `server.js`
+- Electron desktop client: a packaged desktop app that loads the frontend locally and connects to the remote Linux server
 
 ## How it works
 
@@ -16,6 +22,7 @@ The server entrypoint is `server.js`. The frontend lives in `public/index.html` 
 - Socket.IO handles presence updates, chat messages, and WebRTC signaling.
 - Voice calls and screen sharing use browser WebRTC APIs.
 - HTTPS is required because browsers block microphone and screen-capture APIs on insecure origins.
+- The Electron client uses `electron/main.js` and `electron/preload.js` to persist desktop settings and receive native global push-to-talk events.
 
 ## Current behavior and limits
 
@@ -29,6 +36,8 @@ This app is functional, but it has a few deployment-relevant constraints:
 - STUN is configured, but there is no TURN server, so some users behind strict NAT/firewalls may not connect reliably.
 - Voice mode selection is stored in the browser with `localStorage`, so it is per device/browser, not per account.
 - Nicknames are stored in the browser with `localStorage`, so they are per device/browser, not per account.
+- The Electron desktop client stores its settings with `electron-store` instead of browser `localStorage`.
+- Global push-to-talk in the Electron client is implemented with `node-global-key-listener`; according to the project README, Linux support is X11-only and macOS requires Accessibility permission. Source: https://github.com/LaunchMenu/node-global-key-listener
 
 ## Requirements
 
@@ -59,7 +68,7 @@ Example:
 ```bash
 git clone https://github.com/votizlov/telefon.git telefon
 cd telefon
-npm install
+npm install --omit=dev
 ```
 
 ### 3. Add TLS certificate files
@@ -120,6 +129,67 @@ https://your-server-hostname:3000
 
 Use a hostname that matches the certificate. If you use a self-signed certificate, each client browser must accept or trust it first.
 
+## Electron desktop client
+
+The Electron app is a client, not a replacement for the Linux server. It loads the UI from the packaged `public/` files and connects to the server URL configured in the desktop settings panel.
+
+### Install desktop dependencies
+
+```bash
+npm install
+```
+
+This also copies a vendored Socket.IO browser bundle into `public/vendor/socket.io.min.js` during `postinstall`.
+
+### Run the desktop client in development
+
+Start the Linux/server-side app:
+
+```bash
+npm run dev:server
+```
+
+In another terminal, start Electron:
+
+```bash
+npm run dev:desktop
+```
+
+Or run both together:
+
+```bash
+npm run dev
+```
+
+By default, the desktop client expects the server at `https://127.0.0.1:3000`. You can change the server URL from the bottom-left settings panel inside the Electron app.
+
+### Package the desktop client
+
+Build unpacked output:
+
+```bash
+npm run build:desktop
+```
+
+Build installable desktop artifacts:
+
+```bash
+npm run dist
+```
+
+Configured Electron build targets:
+
+- Windows: `nsis`
+- Linux: `AppImage`, `deb`
+- macOS: `dmg`
+
+### Desktop push-to-talk
+
+- In the Electron app, switch the audio mode to `Push to Talk`.
+- Set a desktop hotkey in the bottom-left settings panel.
+- That hotkey works even when the Electron window is not focused.
+- The web version still only supports browser-focused push-to-talk.
+
 ## Run as a systemd service
 
 Create `/etc/systemd/system/telefon.service`:
@@ -159,14 +229,14 @@ To pull the latest changes from GitHub on your Linux server:
 ```bash
 cd /opt/telefon
 git pull origin main
-npm install
+npm install --omit=dev
 sudo systemctl restart telefon
 sudo systemctl status telefon
 ```
 
 Adjust `/opt/telefon` if you cloned the repo somewhere else.
 
-If you are not using `systemd`, restart the app with whatever process manager you use after `git pull` and `npm install`.
+If you are not using `systemd`, restart the app with whatever process manager you use after `git pull` and `npm install --omit=dev`.
 
 ## How to use the app
 
@@ -185,10 +255,12 @@ If you are not using `systemd`, restart the app with whatever process manager yo
 ### Control your microphone
 
 1. Set your nickname in the bottom-left `Voice Settings` section. Other users will see that name instead of your raw socket ID.
-2. Use `Mute Mic` to fully mute or unmute your microphone.
-3. In the bottom-left `Voice Settings` section, choose `Voice Activated` or `Push to Talk`.
-4. `Voice Activated` transmits only when the browser detects speech.
-5. `Push to Talk` stores your preference locally and requires holding `Space` or the on-screen `Hold to Talk` button to transmit.
+2. In the Electron app, set the `Server URL` field to the Linux server you want to join.
+3. Use `Mute Mic` to fully mute or unmute your microphone.
+4. In the bottom-left `Voice Settings` section, choose `Voice Activated` or `Push to Talk`.
+5. `Voice Activated` transmits only when the browser detects speech.
+6. In the web client, `Push to Talk` uses `Space` or the on-screen `Hold to Talk` button.
+7. In the Electron client, `Push to Talk` can use a configurable global desktop hotkey or the on-screen button.
 
 ### Send chat messages
 
@@ -220,15 +292,30 @@ Install dependencies:
 npm install
 ```
 
-Run locally:
+Run the Linux server locally:
 
 ```bash
 npm start
 ```
 
+Run the Electron client:
+
+```bash
+npm run dev:desktop
+```
+
+Run both together:
+
+```bash
+npm run dev
+```
+
 Main files:
 
 - `server.js`: HTTPS server, static hosting, Socket.IO events
-- `public/script.js`: WebRTC call logic, chat UI, screen-sharing logic
+- `public/script.js`: WebRTC call logic, chat UI, desktop/browser settings logic, screen-sharing logic
 - `public/index.html`: app layout
 - `public/style.css`: styles
+- `electron/main.js`: Electron app lifecycle, desktop settings IPC, global push-to-talk listener
+- `electron/preload.js`: secure renderer bridge for desktop settings and push-to-talk state
+- `electron/hotkeys.js`: desktop hotkey parsing and matching

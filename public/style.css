@@ -11,6 +11,14 @@ body {
     color: #dcddde;
 }
 
+body.desktop-app .desktop-only {
+    display: block;
+}
+
+.desktop-only {
+    display: none;
+}
+
 #app {
     display: flex;
     height: 100vh;

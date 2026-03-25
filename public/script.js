@@ -1,12 +1,22 @@
-// script.js
+const desktopApi = window.telefonDesktop || null;
+const isDesktopApp = Boolean(desktopApi);
+const ioFactory = typeof window.io === 'function' ? window.io : null;
 
-const socket = io.connect(window.location.hostname + ':3000', { secure: true });
-const AUDIO_MODE_STORAGE_KEY = 'telefon.audioMode';
-const NICKNAME_STORAGE_KEY = 'telefon.nickname';
+const STORAGE_KEYS = {
+    audioMode: 'telefon.audioMode',
+    nickname: 'telefon.nickname',
+    serverUrl: 'telefon.serverUrl',
+    pushToTalkHotkey: 'telefon.pushToTalkHotkey',
+};
+
 const AUDIO_MODE_VOICE_ACTIVATED = 'voice-activated';
 const AUDIO_MODE_PUSH_TO_TALK = 'push-to-talk';
 const VOICE_ACTIVITY_THRESHOLD = 0.035;
 const VOICE_ACTIVITY_HOLD_MS = 350;
+const DEFAULT_DESKTOP_SERVER_URL = 'https://127.0.0.1:3000';
+const DEFAULT_DESKTOP_PUSH_TO_TALK_HOTKEY = 'Alt+Space';
+
+const desktopSettings = isDesktopApp && desktopApi.getSettings ? desktopApi.getSettings() : {};
 
 const yourIdElement = document.getElementById('yourId');
 const usersListElement = document.getElementById('users');
@@ -17,15 +27,22 @@ const audioStatusElement = document.getElementById('audioStatus');
 const settingsHintElement = document.getElementById('settingsHint');
 const audioModeInputs = document.querySelectorAll('input[name="audioMode"]');
 const nicknameInput = document.getElementById('nicknameInput');
+const serverUrlInput = document.getElementById('serverUrlInput');
+const pushToTalkHotkeyInput = document.getElementById('pushToTalkHotkeyInput');
 const screenSharingSection = document.getElementById('screenSharingSection');
 const screenHeaderElement = document.getElementById('screenHeader');
 const screenVideoElement = document.getElementById('screenVideo');
+const chatInputElement = document.getElementById('chatInput');
+const sendButton = document.getElementById('sendButton');
+
+document.body.classList.toggle('desktop-app', isDesktopApp);
 
 muteButton.disabled = true;
 pushToTalkButton.disabled = true;
 
-let localStream;
-let monitoringStream;
+let socket = null;
+let localStream = null;
+let monitoringStream = null;
 let peerConnections = {};
 let remoteAudioElements = {};
 let connectedUsers = [];
@@ -35,8 +52,10 @@ let isStreaming = false;
 let screenStream = null;
 let screenPeerConnection = null;
 let activeStreamerId = null;
-let audioMode = loadAudioMode();
+let serverUrl = loadServerUrl();
 let nickname = loadNickname();
+let audioMode = loadAudioMode();
+let pushToTalkHotkey = loadPushToTalkHotkey();
 let isMuted = false;
 let isPushToTalkActive = false;
 let isVoiceDetected = false;
@@ -48,179 +67,147 @@ let voiceHoldUntil = 0;
 let lastAudioUiState = '';
 let mediaInitializationComplete = false;
 let lastBroadcastSpeakingState = false;
+let isStoppingScreenShare = false;
+let removeDesktopPushToTalkListener = () => {};
 
-applyStoredAudioMode();
 applyStoredNickname();
-bindAudioControls();
-updateMicrophoneState(true);
+applyStoredAudioMode();
+applyStoredConnectionSettings();
+bindUiEventHandlers();
 updateOwnIdentityDisplay();
 updateScreenSharingUi();
+updateMicrophoneState(true);
+connectSocket();
+initializeMicrophone();
 
-// Get audio stream from the user's microphone
-navigator.mediaDevices.getUserMedia({ audio: true, video: false })
-    .then((stream) => {
-        localStream = stream;
-        const [audioTrack] = stream.getAudioTracks();
-        muteButton.disabled = false;
-
-        if (audioTrack) {
-            monitoringStream = new MediaStream([audioTrack.clone()]);
-            initializeVoiceMonitoring(monitoringStream);
+if (isDesktopApp && desktopApi.onPushToTalkState) {
+    removeDesktopPushToTalkListener = desktopApi.onPushToTalkState((isActive) => {
+        if (audioMode !== AUDIO_MODE_PUSH_TO_TALK) {
+            return;
         }
 
-        mediaInitializationComplete = true;
+        isPushToTalkActive = isActive;
         updateMicrophoneState(true);
-        syncPeerConnections();
-    })
-    .catch((error) => {
-        console.error('Error accessing media devices.', error);
-        audioStatusElement.textContent = 'Microphone access denied.';
-        muteButton.disabled = true;
-        pushToTalkButton.disabled = true;
-        mediaInitializationComplete = true;
-        syncPeerConnections();
-    });
-
-// Handle connection
-socket.on('connect', () => {
-    if (yourId && yourId !== socket.id) {
-        closeAllPeerConnections();
-    }
-
-    yourId = socket.id;
-    connectedUsers = connectedUsers.filter((user) => user.id !== yourId);
-    speakingUsers.delete(yourId);
-    lastBroadcastSpeakingState = false;
-    updateOwnIdentityDisplay();
-    updateSpeakingIndicators();
-    socket.emit('setNickname', nickname);
-    if (mediaInitializationComplete) {
-        broadcastSpeakingState(getShouldTransmitAudio());
-        syncPeerConnections();
-    }
-});
-
-// Update the list of connected users
-socket.on('userList', (users) => {
-    connectedUsers = users.filter((user) => user.id !== yourId);
-    speakingUsers = new Set(
-        Array.from(speakingUsers).filter((userId) => connectedUsers.some((user) => user.id === userId))
-    );
-    renderUserList();
-    updateOwnIdentityDisplay();
-    updateScreenSharingUi();
-
-    if (mediaInitializationComplete) {
-        syncPeerConnections();
-    }
-});
-
-socket.on('speakingState', (data) => {
-    if (!data || !data.userId) {
-        return;
-    }
-
-    if (data.isSpeaking) {
-        speakingUsers.add(data.userId);
-    } else {
-        speakingUsers.delete(data.userId);
-    }
-
-    updateSpeakingIndicators();
-});
-
-socket.on('streamState', (data) => {
-    activeStreamerId = data && data.isActive ? data.streamerId : null;
-
-    if (!activeStreamerId && !isStreaming) {
-        clearRemoteScreenShare();
-    }
-
-    updateScreenSharingUi();
-});
-
-socket.on('screenShareStopped', () => {
-    if (!isStreaming) {
-        clearRemoteScreenShare();
-    }
-    activeStreamerId = null;
-    updateScreenSharingUi();
-});
-
-function renderUserList() {
-    usersListElement.innerHTML = '';
-    connectedUsers.forEach((user) => {
-        const li = document.createElement('li');
-        li.dataset.id = user.id;
-        li.textContent = getDisplayName(user.id);
-        li.title = user.id;
-        li.classList.toggle('speaking-user', speakingUsers.has(user.id));
-        usersListElement.appendChild(li);
     });
 }
 
-function loadNickname() {
+window.addEventListener('beforeunload', () => {
+    removeDesktopPushToTalkListener();
+
+    if (socket) {
+        socket.disconnect();
+    }
+});
+
+function readStoredValue(storageKey, desktopKey, fallbackValue) {
+    if (isDesktopApp) {
+        return Object.prototype.hasOwnProperty.call(desktopSettings, desktopKey)
+            ? desktopSettings[desktopKey]
+            : fallbackValue;
+    }
+
     try {
-        return (localStorage.getItem(NICKNAME_STORAGE_KEY) || '').trim().slice(0, 24);
+        const storedValue = localStorage.getItem(storageKey);
+        return storedValue === null ? fallbackValue : storedValue;
     } catch (error) {
-        console.error('Error reading nickname from local storage.', error);
+        console.error(`Error reading ${storageKey} from local storage.`, error);
+        return fallbackValue;
+    }
+}
+
+function updateStoredValues(patch) {
+    if (isDesktopApp && desktopApi.updateSettings) {
+        const nextSettings = desktopApi.updateSettings(patch);
+        Object.assign(desktopSettings, nextSettings);
+        return;
+    }
+
+    Object.entries(patch).forEach(([desktopKey, value]) => {
+        const storageKey = STORAGE_KEYS[desktopKey];
+        if (!storageKey) {
+            return;
+        }
+
+        try {
+            localStorage.setItem(storageKey, value);
+        } catch (error) {
+            console.error(`Error writing ${storageKey} to local storage.`, error);
+        }
+    });
+}
+
+function getDefaultServerUrl() {
+    if (window.location.protocol === 'https:' || window.location.protocol === 'http:') {
+        return window.location.origin;
+    }
+
+    return DEFAULT_DESKTOP_SERVER_URL;
+}
+
+function normalizeServerUrl(value) {
+    if (typeof value !== 'string') {
+        return '';
+    }
+
+    const trimmedValue = value.trim();
+    if (!trimmedValue) {
+        return '';
+    }
+
+    try {
+        const parsedUrl = new URL(trimmedValue);
+        if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+            return '';
+        }
+
+        return parsedUrl.toString().replace(/\/+$/, '');
+    } catch (error) {
         return '';
     }
 }
 
+function loadServerUrl() {
+    const storedValue = readStoredValue(STORAGE_KEYS.serverUrl, 'serverUrl', getDefaultServerUrl());
+    return normalizeServerUrl(storedValue) || getDefaultServerUrl();
+}
+
+function saveServerUrl(value) {
+    updateStoredValues({ serverUrl: value });
+}
+
+function loadNickname() {
+    return String(readStoredValue(STORAGE_KEYS.nickname, 'nickname', '') || '').trim().slice(0, 24);
+}
+
 function saveNickname(value) {
-    try {
-        localStorage.setItem(NICKNAME_STORAGE_KEY, value);
-    } catch (error) {
-        console.error('Error saving nickname to local storage.', error);
+    updateStoredValues({ nickname: value });
+}
+
+function loadAudioMode() {
+    const storedValue = readStoredValue(STORAGE_KEYS.audioMode, 'audioMode', AUDIO_MODE_VOICE_ACTIVATED);
+    return storedValue === AUDIO_MODE_PUSH_TO_TALK ? AUDIO_MODE_PUSH_TO_TALK : AUDIO_MODE_VOICE_ACTIVATED;
+}
+
+function saveAudioMode(value) {
+    updateStoredValues({ audioMode: value });
+}
+
+function loadPushToTalkHotkey() {
+    if (!isDesktopApp) {
+        return String(readStoredValue(STORAGE_KEYS.pushToTalkHotkey, 'pushToTalkHotkey', '') || '');
     }
+
+    return String(readStoredValue(STORAGE_KEYS.pushToTalkHotkey, 'pushToTalkHotkey', DEFAULT_DESKTOP_PUSH_TO_TALK_HOTKEY) || '')
+        .trim()
+        .slice(0, 64);
+}
+
+function savePushToTalkHotkey(value) {
+    updateStoredValues({ pushToTalkHotkey: value });
 }
 
 function applyStoredNickname() {
     nicknameInput.value = nickname;
-}
-
-function getUserById(userId) {
-    return connectedUsers.find((user) => user.id === userId) || null;
-}
-
-function getDisplayName(userId) {
-    if (!userId) {
-        return '';
-    }
-
-    if (userId === yourId) {
-        return nickname || userId;
-    }
-
-    const user = getUserById(userId);
-    return (user && user.nickname) || userId;
-}
-
-function updateOwnIdentityDisplay() {
-    yourIdElement.textContent = nickname || yourId || 'Connecting...';
-    yourIdElement.title = yourId || '';
-}
-
-function loadAudioMode() {
-    try {
-        const storedValue = localStorage.getItem(AUDIO_MODE_STORAGE_KEY);
-        if (storedValue === AUDIO_MODE_PUSH_TO_TALK || storedValue === AUDIO_MODE_VOICE_ACTIVATED) {
-            return storedValue;
-        }
-    } catch (error) {
-        console.error('Error reading audio mode from local storage.', error);
-    }
-
-    return AUDIO_MODE_VOICE_ACTIVATED;
-}
-
-function saveAudioMode(mode) {
-    try {
-        localStorage.setItem(AUDIO_MODE_STORAGE_KEY, mode);
-    } catch (error) {
-        console.error('Error saving audio mode to local storage.', error);
-    }
 }
 
 function applyStoredAudioMode() {
@@ -229,35 +216,21 @@ function applyStoredAudioMode() {
     });
 }
 
-function bindAudioControls() {
-    nicknameInput.addEventListener('input', (event) => {
-        nickname = event.target.value.trim().slice(0, 24);
-        if (event.target.value !== nickname) {
-            event.target.value = nickname;
-        }
+function applyStoredConnectionSettings() {
+    serverUrlInput.value = serverUrl;
+    pushToTalkHotkeyInput.value = pushToTalkHotkey;
+    serverUrlInput.disabled = !isDesktopApp;
+    pushToTalkHotkeyInput.disabled = !isDesktopApp;
+}
 
-        saveNickname(nickname);
-        updateOwnIdentityDisplay();
-        renderUserList();
-        updateScreenSharingUi();
-
-        if (socket.connected) {
-            socket.emit('setNickname', nickname);
-        }
-    });
+function bindUiEventHandlers() {
+    nicknameInput.addEventListener('input', handleNicknameInput);
+    serverUrlInput.addEventListener('change', handleServerUrlChange);
+    pushToTalkHotkeyInput.addEventListener('keydown', handlePushToTalkHotkeyCapture);
+    pushToTalkHotkeyInput.addEventListener('focus', () => pushToTalkHotkeyInput.select());
 
     audioModeInputs.forEach((input) => {
-        input.addEventListener('change', (event) => {
-            audioMode = event.target.value;
-            saveAudioMode(audioMode);
-
-            if (audioMode !== AUDIO_MODE_PUSH_TO_TALK) {
-                isPushToTalkActive = false;
-            }
-
-            resumeAudioContextIfNeeded();
-            updateMicrophoneState(true);
-        });
+        input.addEventListener('change', handleAudioModeChange);
     });
 
     muteButton.addEventListener('click', () => {
@@ -274,30 +247,201 @@ function bindAudioControls() {
     pushToTalkButton.addEventListener('pointerleave', () => setPushToTalkActive(false));
     pushToTalkButton.addEventListener('pointercancel', () => setPushToTalkActive(false));
 
-    window.addEventListener('keydown', (event) => {
-        if (event.code !== 'Space' || audioMode !== AUDIO_MODE_PUSH_TO_TALK || event.repeat || isEditableElement(document.activeElement)) {
-            return;
-        }
+    if (!isDesktopApp) {
+        window.addEventListener('keydown', handleBrowserPushToTalkKeyDown);
+        window.addEventListener('keyup', handleBrowserPushToTalkKeyUp);
+    }
 
-        event.preventDefault();
-        setPushToTalkActive(true);
+    window.addEventListener('blur', () => {
+        if (!isDesktopApp) {
+            setPushToTalkActive(false);
+        }
     });
-
-    window.addEventListener('keyup', (event) => {
-        if (event.code !== 'Space') {
-            return;
-        }
-
-        if (audioMode === AUDIO_MODE_PUSH_TO_TALK) {
-            event.preventDefault();
-        }
-
-        setPushToTalkActive(false);
-    });
-
-    window.addEventListener('blur', () => setPushToTalkActive(false));
     window.addEventListener('pointerdown', resumeAudioContextIfNeeded);
     window.addEventListener('keydown', resumeAudioContextIfNeeded);
+
+    startStreamButton.addEventListener('click', () => {
+        if (!isStreaming) {
+            startScreenSharing();
+        } else {
+            stopScreenSharing();
+        }
+    });
+
+    sendButton.addEventListener('click', sendChatMessage);
+    chatInputElement.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            sendChatMessage();
+        }
+    });
+}
+
+function handleNicknameInput(event) {
+    nickname = event.target.value.trim().slice(0, 24);
+    if (event.target.value !== nickname) {
+        event.target.value = nickname;
+    }
+
+    saveNickname(nickname);
+    updateOwnIdentityDisplay();
+    renderUserList();
+    updateScreenSharingUi();
+
+    emitSocketEvent('setNickname', nickname);
+}
+
+function handleServerUrlChange(event) {
+    if (!isDesktopApp) {
+        event.target.value = serverUrl;
+        return;
+    }
+
+    const nextServerUrl = normalizeServerUrl(event.target.value);
+    if (!nextServerUrl) {
+        alert('Enter a valid server URL, for example https://voice.example.com:3000');
+        event.target.value = serverUrl;
+        return;
+    }
+
+    if (nextServerUrl === serverUrl) {
+        event.target.value = serverUrl;
+        return;
+    }
+
+    serverUrl = nextServerUrl;
+    saveServerUrl(serverUrl);
+    reconnectSocket();
+}
+
+function handlePushToTalkHotkeyCapture(event) {
+    if (!isDesktopApp) {
+        return;
+    }
+
+    event.preventDefault();
+
+    if (event.key === 'Backspace' || event.key === 'Delete' || event.key === 'Escape') {
+        pushToTalkHotkey = '';
+        pushToTalkHotkeyInput.value = '';
+        savePushToTalkHotkey(pushToTalkHotkey);
+        isPushToTalkActive = false;
+        updateMicrophoneState(true);
+        return;
+    }
+
+    const capturedHotkey = hotkeyFromKeyboardEvent(event);
+    if (!capturedHotkey) {
+        return;
+    }
+
+    pushToTalkHotkey = capturedHotkey;
+    pushToTalkHotkeyInput.value = pushToTalkHotkey;
+    savePushToTalkHotkey(pushToTalkHotkey);
+    updateMicrophoneState(true);
+}
+
+function handleAudioModeChange(event) {
+    audioMode = event.target.value;
+    saveAudioMode(audioMode);
+
+    if (audioMode !== AUDIO_MODE_PUSH_TO_TALK) {
+        isPushToTalkActive = false;
+    }
+
+    resumeAudioContextIfNeeded();
+    updateMicrophoneState(true);
+}
+
+function handleBrowserPushToTalkKeyDown(event) {
+    if (event.code !== 'Space' || audioMode !== AUDIO_MODE_PUSH_TO_TALK || event.repeat || isEditableElement(document.activeElement)) {
+        return;
+    }
+
+    event.preventDefault();
+    setPushToTalkActive(true);
+}
+
+function handleBrowserPushToTalkKeyUp(event) {
+    if (event.code !== 'Space') {
+        return;
+    }
+
+    if (audioMode === AUDIO_MODE_PUSH_TO_TALK) {
+        event.preventDefault();
+    }
+
+    setPushToTalkActive(false);
+}
+
+function hotkeyFromKeyboardEvent(event) {
+    const modifierTokens = [];
+
+    if (event.ctrlKey) {
+        modifierTokens.push('Ctrl');
+    }
+    if (event.altKey) {
+        modifierTokens.push('Alt');
+    }
+    if (event.shiftKey) {
+        modifierTokens.push('Shift');
+    }
+    if (event.metaKey) {
+        modifierTokens.push('Meta');
+    }
+
+    const key = normalizeHotkeyKey(event.key);
+    if (!key) {
+        return '';
+    }
+
+    return [...modifierTokens, key].join('+');
+}
+
+function normalizeHotkeyKey(key) {
+    if (typeof key !== 'string') {
+        return '';
+    }
+
+    const normalizedKey = key.trim();
+    if (!normalizedKey) {
+        return '';
+    }
+
+    if (normalizedKey === ' ') {
+        return 'Space';
+    }
+
+    if (normalizedKey.length === 1 && /[a-z0-9]/i.test(normalizedKey)) {
+        return normalizedKey.toUpperCase();
+    }
+
+    const specialKeys = {
+        Enter: 'Enter',
+        Tab: 'Tab',
+        Escape: 'Escape',
+        Esc: 'Escape',
+        Backspace: 'Backspace',
+        Delete: 'Delete',
+        ArrowUp: 'Up',
+        ArrowDown: 'Down',
+        ArrowLeft: 'Left',
+        ArrowRight: 'Right',
+    };
+
+    if (specialKeys[normalizedKey]) {
+        return specialKeys[normalizedKey];
+    }
+
+    if (/^F([1-9]|1[0-2])$/.test(normalizedKey.toUpperCase())) {
+        return normalizedKey.toUpperCase();
+    }
+
+    if (['Control', 'Shift', 'Alt', 'Meta'].includes(normalizedKey)) {
+        return '';
+    }
+
+    return '';
 }
 
 function isEditableElement(element) {
@@ -331,6 +475,32 @@ function resumeAudioContextIfNeeded() {
     }
 }
 
+function initializeMicrophone() {
+    navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+        .then((stream) => {
+            localStream = stream;
+            const [audioTrack] = stream.getAudioTracks();
+            muteButton.disabled = false;
+
+            if (audioTrack) {
+                monitoringStream = new MediaStream([audioTrack.clone()]);
+                initializeVoiceMonitoring(monitoringStream);
+            }
+
+            mediaInitializationComplete = true;
+            updateMicrophoneState(true);
+            syncPeerConnections();
+        })
+        .catch((error) => {
+            console.error('Error accessing media devices.', error);
+            audioStatusElement.textContent = 'Microphone access denied.';
+            muteButton.disabled = true;
+            pushToTalkButton.disabled = true;
+            mediaInitializationComplete = true;
+            syncPeerConnections();
+        });
+}
+
 function initializeVoiceMonitoring(stream) {
     const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
 
@@ -359,8 +529,8 @@ function monitorVoiceActivity() {
     analyser.getByteTimeDomainData(analyserData);
 
     let total = 0;
-    for (let i = 0; i < analyserData.length; i += 1) {
-        const sample = (analyserData[i] - 128) / 128;
+    for (let index = 0; index < analyserData.length; index += 1) {
+        const sample = (analyserData[index] - 128) / 128;
         total += sample * sample;
     }
 
@@ -394,19 +564,6 @@ function addLocalAudioTrack(peerConnection) {
     peerConnection.addTrack(audioTrack, localStream);
 }
 
-function updateMicrophoneState(forceUiUpdate = false) {
-    const audioTrack = getLocalAudioTrack();
-    const shouldTransmit = getShouldTransmitAudio();
-
-    if (audioTrack) {
-        audioTrack.enabled = shouldTransmit;
-    }
-
-    broadcastSpeakingState(shouldTransmit);
-    updateSpeakingIndicators();
-    updateAudioUi(shouldTransmit, forceUiUpdate);
-}
-
 function getShouldTransmitAudio() {
     const audioTrack = getLocalAudioTrack();
     return Boolean(
@@ -420,47 +577,17 @@ function getShouldTransmitAudio() {
     );
 }
 
-function broadcastSpeakingState(isSpeaking) {
-    if (!socket.connected || lastBroadcastSpeakingState === isSpeaking) {
-        return;
+function updateMicrophoneState(forceUiUpdate = false) {
+    const audioTrack = getLocalAudioTrack();
+    const shouldTransmit = getShouldTransmitAudio();
+
+    if (audioTrack) {
+        audioTrack.enabled = shouldTransmit;
     }
 
-    lastBroadcastSpeakingState = isSpeaking;
-    socket.emit('speakingState', isSpeaking);
-}
-
-function updateSpeakingIndicators() {
-    yourIdElement.classList.toggle('speaking-user', getShouldTransmitAudio());
-
-    usersListElement.querySelectorAll('li').forEach((li) => {
-        li.classList.toggle('speaking-user', speakingUsers.has(li.dataset.id));
-    });
-}
-
-function updateScreenSharingUi() {
-    const isScreenVisible = isStreaming || Boolean(activeStreamerId);
-    screenSharingSection.classList.toggle('hidden', !isScreenVisible);
-
-    if (!isScreenVisible) {
-        screenHeaderElement.textContent = 'Screen Sharing';
-        return;
-    }
-
-    if (isStreaming) {
-        screenHeaderElement.textContent = 'Screen Sharing - You';
-        return;
-    }
-
-    screenHeaderElement.textContent = `Screen Sharing - ${getDisplayName(activeStreamerId)}`;
-}
-
-function clearRemoteScreenShare() {
-    if (screenPeerConnection) {
-        screenPeerConnection.close();
-        screenPeerConnection = null;
-    }
-
-    screenVideoElement.srcObject = null;
+    broadcastSpeakingState(shouldTransmit);
+    updateSpeakingIndicators();
+    updateAudioUi(shouldTransmit, forceUiUpdate);
 }
 
 function updateAudioUi(shouldTransmit, force = false) {
@@ -471,12 +598,17 @@ function updateAudioUi(shouldTransmit, force = false) {
     } else if (isMuted) {
         statusText = 'Microphone muted.';
     } else if (audioMode === AUDIO_MODE_PUSH_TO_TALK) {
-        statusText = shouldTransmit ? 'Transmitting while push-to-talk is held.' : 'Hold Space or the button to talk.';
+        const hotkeyLabel = isDesktopApp
+            ? (pushToTalkHotkey || 'the on-screen button')
+            : 'Space or the button';
+        statusText = shouldTransmit
+            ? 'Transmitting while push-to-talk is held.'
+            : `Hold ${hotkeyLabel} to talk.`;
     } else {
         statusText = shouldTransmit ? 'Voice detected. Transmitting.' : 'Voice activated mode is waiting for speech.';
     }
 
-    const nextUiState = `${audioMode}:${isMuted}:${isPushToTalkActive}:${shouldTransmit}:${muteButton.disabled}`;
+    const nextUiState = `${audioMode}:${isMuted}:${isPushToTalkActive}:${shouldTransmit}:${muteButton.disabled}:${pushToTalkHotkey}`;
     if (!force && nextUiState === lastAudioUiState) {
         return;
     }
@@ -492,12 +624,210 @@ function updateAudioUi(shouldTransmit, force = false) {
     audioStatusElement.classList.toggle('muted', isMuted || muteButton.disabled);
     audioStatusElement.classList.toggle('transmitting', shouldTransmit && !isMuted);
     settingsHintElement.textContent = audioMode === AUDIO_MODE_PUSH_TO_TALK
-        ? 'Push to talk is active. Hold Space or the button above to transmit.'
+        ? getPushToTalkHint()
         : 'Voice activated mode transmits only while the app detects speech.';
 }
 
+function getPushToTalkHint() {
+    if (isDesktopApp) {
+        return pushToTalkHotkey
+            ? `Desktop push to talk is active. Hold ${pushToTalkHotkey} or the on-screen button to transmit.`
+            : 'Desktop push to talk is active. Configure a hotkey or use the on-screen button to transmit.';
+    }
+
+    return 'Push to talk is active. Hold Space or the button above to transmit.';
+}
+
+function updateSpeakingIndicators() {
+    yourIdElement.classList.toggle('speaking-user', getShouldTransmitAudio());
+
+    usersListElement.querySelectorAll('li').forEach((listItem) => {
+        listItem.classList.toggle('speaking-user', speakingUsers.has(listItem.dataset.id));
+    });
+}
+
+function getUserById(userId) {
+    return connectedUsers.find((user) => user.id === userId) || null;
+}
+
+function getDisplayName(userId) {
+    if (!userId) {
+        return '';
+    }
+
+    if (userId === yourId) {
+        return nickname || userId;
+    }
+
+    const user = getUserById(userId);
+    return (user && user.nickname) || userId;
+}
+
+function updateOwnIdentityDisplay() {
+    yourIdElement.textContent = nickname || yourId || 'Connecting...';
+    yourIdElement.title = yourId || '';
+}
+
+function renderUserList() {
+    usersListElement.innerHTML = '';
+    connectedUsers.forEach((user) => {
+        const listItem = document.createElement('li');
+        listItem.dataset.id = user.id;
+        listItem.textContent = getDisplayName(user.id);
+        listItem.title = user.id;
+        listItem.classList.toggle('speaking-user', speakingUsers.has(user.id));
+        usersListElement.appendChild(listItem);
+    });
+}
+
+function connectSocket() {
+    if (!ioFactory) {
+        audioStatusElement.textContent = 'Socket.IO client failed to load.';
+        return;
+    }
+
+    if (socket) {
+        socket.removeAllListeners();
+        socket.disconnect();
+    }
+
+    socket = ioFactory(serverUrl, {
+        secure: serverUrl.startsWith('https://'),
+        transports: ['websocket', 'polling'],
+    });
+
+    bindSocketEventHandlers(socket);
+}
+
+function reconnectSocket() {
+    closeAllPeerConnections();
+    speakingUsers.clear();
+    connectedUsers = [];
+    renderUserList();
+    updateSpeakingIndicators();
+
+    if (!isStreaming) {
+        activeStreamerId = null;
+        clearRemoteScreenShare();
+        updateScreenSharingUi();
+    } else {
+        stopScreenSharing();
+    }
+
+    connectSocket();
+}
+
+function bindSocketEventHandlers(socketInstance) {
+    socketInstance.on('connect', handleSocketConnect);
+    socketInstance.on('disconnect', handleSocketDisconnect);
+    socketInstance.on('userList', handleUserList);
+    socketInstance.on('speakingState', handleSpeakingState);
+    socketInstance.on('streamState', handleStreamState);
+    socketInstance.on('screenShareStopped', handleScreenShareStopped);
+    socketInstance.on('signal', handleVoiceSignal);
+    socketInstance.on('chatMessage', handleIncomingChatMessage);
+    socketInstance.on('screenSignal', handleScreenSignal);
+    socketInstance.on('streamDenied', handleStreamDenied);
+}
+
+function handleSocketConnect() {
+    if (yourId && yourId !== socket.id) {
+        closeAllPeerConnections();
+    }
+
+    yourId = socket.id;
+    connectedUsers = connectedUsers.filter((user) => user.id !== yourId);
+    speakingUsers.delete(yourId);
+    lastBroadcastSpeakingState = false;
+    updateOwnIdentityDisplay();
+    updateSpeakingIndicators();
+    emitSocketEvent('setNickname', nickname);
+
+    if (mediaInitializationComplete) {
+        broadcastSpeakingState(getShouldTransmitAudio());
+        syncPeerConnections();
+    }
+}
+
+function handleSocketDisconnect() {
+    closeAllPeerConnections();
+    connectedUsers = [];
+    speakingUsers.clear();
+    renderUserList();
+    updateSpeakingIndicators();
+
+    if (!isStreaming) {
+        activeStreamerId = null;
+        clearRemoteScreenShare();
+    }
+
+    updateScreenSharingUi();
+}
+
+function handleUserList(users) {
+    connectedUsers = Array.isArray(users) ? users.filter((user) => user.id !== yourId) : [];
+    speakingUsers = new Set(
+        Array.from(speakingUsers).filter((userId) => connectedUsers.some((user) => user.id === userId))
+    );
+    renderUserList();
+    updateOwnIdentityDisplay();
+    updateScreenSharingUi();
+
+    if (mediaInitializationComplete) {
+        syncPeerConnections();
+    }
+}
+
+function handleSpeakingState(data) {
+    if (!data || !data.userId) {
+        return;
+    }
+
+    if (data.isSpeaking) {
+        speakingUsers.add(data.userId);
+    } else {
+        speakingUsers.delete(data.userId);
+    }
+
+    updateSpeakingIndicators();
+}
+
+function handleStreamState(data) {
+    activeStreamerId = data && data.isActive ? data.streamerId : null;
+
+    if (!activeStreamerId && !isStreaming) {
+        clearRemoteScreenShare();
+    }
+
+    updateScreenSharingUi();
+}
+
+function handleScreenShareStopped() {
+    if (!isStreaming) {
+        clearRemoteScreenShare();
+    }
+
+    activeStreamerId = null;
+    updateScreenSharingUi();
+}
+
+function emitSocketEvent(eventName, payload) {
+    if (socket && socket.connected) {
+        socket.emit(eventName, payload);
+    }
+}
+
+function broadcastSpeakingState(isSpeaking) {
+    if (!socket || !socket.connected || lastBroadcastSpeakingState === isSpeaking) {
+        return;
+    }
+
+    lastBroadcastSpeakingState = isSpeaking;
+    socket.emit('speakingState', isSpeaking);
+}
+
 function isOffererFor(remoteUserId) {
-    return yourId && yourId.localeCompare(remoteUserId) < 0;
+    return Boolean(yourId && yourId.localeCompare(remoteUserId) < 0);
 }
 
 function syncPeerConnections() {
@@ -527,30 +857,24 @@ function syncPeerConnections() {
 }
 
 function createPeerConnection(remoteUserId) {
-    const configuration = {
-        iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-        ]
-    };
-    const peerConnection = new RTCPeerConnection(configuration);
+    const peerConnection = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+    });
 
-    // Add the local stream to the connection
     addLocalAudioTrack(peerConnection);
 
-    // Handle incoming tracks
     peerConnection.ontrack = (event) => {
         const remoteAudio = remoteAudioElements[remoteUserId] || new Audio();
         remoteAudio.srcObject = event.streams[0];
-        remoteAudio.play();
+        remoteAudio.play().catch(() => {});
         remoteAudioElements[remoteUserId] = remoteAudio;
     };
 
-    // Handle ICE candidates
     peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
-            socket.emit('signal', {
+            emitSocketEvent('signal', {
                 target: remoteUserId,
-                signal: { 'candidate': event.candidate },
+                signal: { candidate: event.candidate },
             });
         }
     };
@@ -566,13 +890,11 @@ function createPeerConnection(remoteUserId) {
 
 function createAndSendOffer(remoteUserId, peerConnection) {
     peerConnection.createOffer()
-        .then((offer) => {
-            return peerConnection.setLocalDescription(offer);
-        })
+        .then((offer) => peerConnection.setLocalDescription(offer))
         .then(() => {
-            socket.emit('signal', {
+            emitSocketEvent('signal', {
                 target: remoteUserId,
-                signal: { 'sdp': peerConnection.localDescription },
+                signal: { sdp: peerConnection.localDescription },
             });
         })
         .catch((error) => {
@@ -604,8 +926,7 @@ function closeAllPeerConnections() {
     });
 }
 
-// Handle incoming signals
-socket.on('signal', (data) => {
+function handleVoiceSignal(data) {
     const fromId = data.from;
     let peerConnection = peerConnections[fromId];
 
@@ -618,68 +939,110 @@ socket.on('signal', (data) => {
         peerConnection.setRemoteDescription(new RTCSessionDescription(data.signal.sdp))
             .then(() => {
                 if (peerConnection.remoteDescription.type === 'offer') {
-                    peerConnection.createAnswer()
-                        .then((answer) => {
-                            return peerConnection.setLocalDescription(answer);
-                        })
+                    return peerConnection.createAnswer()
+                        .then((answer) => peerConnection.setLocalDescription(answer))
                         .then(() => {
-                            socket.emit('signal', {
+                            emitSocketEvent('signal', {
                                 target: fromId,
-                                signal: { 'sdp': peerConnection.localDescription },
+                                signal: { sdp: peerConnection.localDescription },
                             });
                         });
                 }
+
+                return null;
+            })
+            .catch((error) => {
+                console.error('Error handling voice SDP signal:', error);
             });
     } else if (data.signal.candidate) {
-        peerConnection.addIceCandidate(new RTCIceCandidate(data.signal.candidate));
+        peerConnection.addIceCandidate(new RTCIceCandidate(data.signal.candidate))
+            .catch((error) => {
+                console.error('Error adding ICE candidate:', error);
+            });
     }
-});
+}
 
-// Add event listener for send button
-document.getElementById('sendButton').onclick = () => {
-    const messageInput = document.getElementById('chatInput');
-    const message = messageInput.value.trim();
-    if (message !== '') {
-        // Send message to server
-        socket.emit('chatMessage', {
-            from: yourId,
-            nickname,
-            message: message,
-        });
-        // Add message to chat window
-        addMessageToChatWindow(`Me: ${message}`);
-        messageInput.value = '';
+function sendChatMessage() {
+    const message = chatInputElement.value.trim();
+    if (!message) {
+        return;
     }
-};
 
-// Function to add message to chat window
+    emitSocketEvent('chatMessage', {
+        from: yourId,
+        nickname,
+        message,
+    });
+
+    addMessageToChatWindow(`Me: ${message}`);
+    chatInputElement.value = '';
+}
+
 function addMessageToChatWindow(message) {
     const chatWindow = document.getElementById('chatWindow');
     const messageElement = document.createElement('div');
     messageElement.textContent = message;
     chatWindow.appendChild(messageElement);
-    // Scroll to the bottom
     chatWindow.scrollTop = chatWindow.scrollHeight;
 }
 
-// Listen for incoming chat messages
-socket.on('chatMessage', (data) => {
-    // Display message in chat window
+function handleIncomingChatMessage(data) {
     const author = data.nickname || getDisplayName(data.from);
     addMessageToChatWindow(`${author}: ${data.message}`);
-});
+}
 
-// Add event listener to the Start Streaming button
-startStreamButton.onclick = () => {
-    if (!isStreaming) {
-        startScreenSharing();
-    } else {
-        stopScreenSharing();
+function updateScreenSharingUi() {
+    const isScreenVisible = isStreaming || Boolean(activeStreamerId);
+    screenSharingSection.classList.toggle('hidden', !isScreenVisible);
+
+    if (!isScreenVisible) {
+        screenHeaderElement.textContent = 'Screen Sharing';
+        return;
     }
-};
+
+    if (isStreaming) {
+        screenHeaderElement.textContent = 'Screen Sharing - You';
+        return;
+    }
+
+    screenHeaderElement.textContent = `Screen Sharing - ${getDisplayName(activeStreamerId)}`;
+}
+
+function clearRemoteScreenShare() {
+    if (screenPeerConnection) {
+        screenPeerConnection.close();
+        screenPeerConnection = null;
+    }
+
+    screenVideoElement.srcObject = null;
+}
+
+function handleLocalScreenShareEnded() {
+    if (!screenStream && !isStreaming) {
+        return;
+    }
+
+    stopScreenSharing({ skipTrackStop: true });
+}
+
+function attachScreenShareEndHandlers(stream) {
+    if (!stream) {
+        return;
+    }
+
+    stream.addEventListener('inactive', handleLocalScreenShareEnded, { once: true });
+    stream.getTracks().forEach((track) => {
+        track.addEventListener('ended', handleLocalScreenShareEnded, { once: true });
+    });
+}
 
 function startScreenSharing() {
     if (isStreaming) {
+        alert('A stream is already in progress.');
+        return;
+    }
+
+    if (activeStreamerId && activeStreamerId !== yourId) {
         alert('A stream is already in progress.');
         return;
     }
@@ -688,43 +1051,35 @@ function startScreenSharing() {
         .then((stream) => {
             screenStream = stream;
             isStreaming = true;
+            isStoppingScreenShare = false;
             activeStreamerId = yourId;
             startStreamButton.textContent = 'Stop Streaming';
             updateScreenSharingUi();
-
-            // Display the local screen stream
+            attachScreenShareEndHandlers(screenStream);
             screenVideoElement.srcObject = screenStream;
 
-            // Set up peer connection for screen sharing
-            const configuration = {
-                iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    // Add TURN servers if available
-                ]
-            };
-            screenPeerConnection = new RTCPeerConnection(configuration);
+            screenPeerConnection = new RTCPeerConnection({
+                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+            });
 
-            // Add screen stream tracks to the peer connection
             screenStream.getTracks().forEach((track) => {
                 screenPeerConnection.addTrack(track, screenStream);
             });
 
-            // Handle ICE candidates
             screenPeerConnection.onicecandidate = (event) => {
                 if (event.candidate) {
-                    socket.emit('screenSignal', {
+                    emitSocketEvent('screenSignal', {
                         candidate: event.candidate,
                         from: yourId,
                     });
                 }
             };
 
-            // Handle negotiation needed event
             screenPeerConnection.onnegotiationneeded = () => {
                 screenPeerConnection.createOffer()
                     .then((offer) => screenPeerConnection.setLocalDescription(offer))
                     .then(() => {
-                        socket.emit('screenSignal', {
+                        emitSocketEvent('screenSignal', {
                             description: screenPeerConnection.localDescription,
                             from: yourId,
                         });
@@ -733,62 +1088,69 @@ function startScreenSharing() {
                         console.error('Error during screen sharing negotiation:', error);
                     });
             };
-
-            // Handle screen stream ending
-            screenStream.getVideoTracks()[0].onended = () => {
-                stopScreenSharing();
-            };
-
         })
         .catch((error) => {
             console.error('Error accessing display media.', error);
         });
 }
 
-function stopScreenSharing() {
-    if (screenStream) {
-        screenStream.getTracks().forEach((track) => track.stop());
+function stopScreenSharing({ skipTrackStop = false } = {}) {
+    if (isStoppingScreenShare) {
+        return;
     }
-    if (isStreaming && socket.connected) {
-        socket.emit('stopScreenShare');
+
+    const currentScreenStream = screenStream;
+    const wasStreaming = isStreaming;
+
+    if (!currentScreenStream && !wasStreaming) {
+        return;
     }
+
+    isStoppingScreenShare = true;
+
+    if (currentScreenStream && !skipTrackStop) {
+        currentScreenStream.getTracks().forEach((track) => {
+            if (track.readyState === 'live') {
+                track.stop();
+            }
+        });
+    }
+
+    if (wasStreaming) {
+        emitSocketEvent('stopScreenShare');
+    }
+
     if (screenPeerConnection) {
         screenPeerConnection.close();
         screenPeerConnection = null;
     }
+
     screenStream = null;
     isStreaming = false;
     activeStreamerId = null;
     startStreamButton.textContent = 'Start Streaming';
     screenVideoElement.srcObject = null;
     updateScreenSharingUi();
+    isStoppingScreenShare = false;
 }
 
-// Listen for incoming screen signals
-socket.on('screenSignal', async (data) => {
+function handleScreenSignal(data) {
     if (data.from === yourId) {
-        // Ignore signals from self
         return;
     }
 
     if (!screenPeerConnection) {
-        const configuration = {
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                // Add TURN servers if available
-            ]
-        };
-        screenPeerConnection = new RTCPeerConnection(configuration);
+        screenPeerConnection = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+        });
 
-        // Handle remote track
         screenPeerConnection.ontrack = (event) => {
             screenVideoElement.srcObject = event.streams[0];
         };
 
-        // Handle ICE candidates
         screenPeerConnection.onicecandidate = (event) => {
             if (event.candidate) {
-                socket.emit('screenSignal', {
+                emitSocketEvent('screenSignal', {
                     candidate: event.candidate,
                     from: yourId,
                 });
@@ -796,32 +1158,36 @@ socket.on('screenSignal', async (data) => {
         };
     }
 
-    try {
-        if (data.description) {
-            const description = data.description;
-            if (description.type === 'offer') {
-                activeStreamerId = data.from;
-                updateScreenSharingUi();
-                await screenPeerConnection.setRemoteDescription(description);
-                const answer = await screenPeerConnection.createAnswer();
-                await screenPeerConnection.setLocalDescription(answer);
-                socket.emit('screenSignal', {
-                    description: screenPeerConnection.localDescription,
-                    from: yourId,
+    if (data.description) {
+        const description = data.description;
+        if (description.type === 'offer') {
+            activeStreamerId = data.from;
+            updateScreenSharingUi();
+            screenPeerConnection.setRemoteDescription(description)
+                .then(() => screenPeerConnection.createAnswer())
+                .then((answer) => screenPeerConnection.setLocalDescription(answer))
+                .then(() => {
+                    emitSocketEvent('screenSignal', {
+                        description: screenPeerConnection.localDescription,
+                        from: yourId,
+                    });
+                })
+                .catch((error) => {
+                    console.error('Error handling screen share offer:', error);
                 });
-            } else if (description.type === 'answer') {
-                await screenPeerConnection.setRemoteDescription(description);
-            }
-        } else if (data.candidate) {
-            await screenPeerConnection.addIceCandidate(data.candidate);
+        } else if (description.type === 'answer') {
+            screenPeerConnection.setRemoteDescription(description).catch((error) => {
+                console.error('Error handling screen share answer:', error);
+            });
         }
-    } catch (error) {
-        console.error('Error handling screen signal:', error);
+    } else if (data.candidate) {
+        screenPeerConnection.addIceCandidate(data.candidate).catch((error) => {
+            console.error('Error handling screen share ICE candidate:', error);
+        });
     }
-});
+}
 
-// Handle stream denied message
-socket.on('streamDenied', (data) => {
+function handleStreamDenied(data) {
     alert(data.message);
     stopScreenSharing();
-});
+}

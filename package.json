@@ -1,16 +1,63 @@
 {
   "name": "tlf",
   "version": "1.0.0",
-  "description": "",
-  "main": "server.js",
+  "description": "Voice chat app with Linux server deployment and Electron desktop client",
+  "main": "electron/main.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "copy:socket-client": "node scripts/copy-socket-io-client.js",
+    "postinstall": "npm run copy:socket-client",
+    "start": "node server.js",
+    "dev:server": "node server.js",
+    "dev:desktop": "electron .",
+    "dev": "concurrently \"npm run dev:server\" \"wait-on tcp:3000 && npm run dev:desktop\"",
+    "build:desktop": "electron-builder --dir",
+    "dist": "electron-builder",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
     "express": "^4.21.1",
-    "socket.io": "^4.8.0"
+    "socket.io": "^4.8.0",
+    "socket.io-client": "^4.8.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3",
+    "electron-store": "^8.2.0",
+    "node-global-key-listener": "^0.3.0",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.votizlov.telefon",
+    "productName": "Telefon",
+    "asarUnpack": [
+      "node_modules/node-global-key-listener/**/*"
+    ],
+    "files": [
+      "electron/**/*",
+      "public/**/*",
+      "scripts/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Network"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ]
+    }
   }
 }
