@@ -18,8 +18,23 @@
                 <p>Connected Users:</p>
                 <ul id="users"></ul>
             </div>
-            <button id="callButton" class="btn">Call Selected User</button>
             <button id="startStreamButton" class="btn">Start Streaming</button>
+            <button id="muteButton" class="btn secondary-btn">Mute Mic</button>
+            <button id="pushToTalkButton" class="btn secondary-btn hidden" type="button">Hold to Talk</button>
+            <div id="audioStatus" class="audio-status">Initializing microphone...</div>
+
+            <div class="settings-panel">
+                <div class="settings-title">Voice Settings</div>
+                <label class="setting-option" for="modeVoiceActivated">
+                    <input id="modeVoiceActivated" type="radio" name="audioMode" value="voice-activated">
+                    <span>Voice Activated</span>
+                </label>
+                <label class="setting-option" for="modePushToTalk">
+                    <input id="modePushToTalk" type="radio" name="audioMode" value="push-to-talk">
+                    <span>Push to Talk</span>
+                </label>
+                <p id="settingsHint" class="settings-hint"></p>
+            </div>
         </div>
 
         <!-- Main Content -->

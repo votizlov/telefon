@@ -1,0 +1,231 @@
+# Telefon
+
+Telefon is a small browser-based voice chat app built with Node.js, Express, Socket.IO, and WebRTC. It provides:
+
+- one shared voice room where all connected users are joined automatically
+- a shared text chat
+- screen sharing, limited to one active stream at a time
+- user-controlled microphone modes with persistent local settings
+
+The server entrypoint is `server.js`. The frontend lives in `public/index.html` and `public/script.js`.
+
+## How it works
+
+- Express serves the static frontend from the `public/` directory.
+- Socket.IO handles presence updates, chat messages, and WebRTC signaling.
+- Voice calls and screen sharing use browser WebRTC APIs.
+- HTTPS is required because browsers block microphone and screen-capture APIs on insecure origins.
+
+## Current behavior and limits
+
+This app is functional, but it has a few deployment-relevant constraints:
+
+- The client connects to `https://<hostname>:3000` directly from the browser.
+- A normal TLS-terminating reverse proxy on port `443` is not enough by itself, because the browser still tries to open Socket.IO/WebRTC signaling on port `3000`.
+- TLS certificate files must be present as `key.pem` and `cert.pem` in the project root.
+- Only one screen-sharing session is allowed at a time.
+- There is no authentication, multiple-room system, or user-friendly naming. All users join the same room and are identified by Socket.IO IDs.
+- STUN is configured, but there is no TURN server, so some users behind strict NAT/firewalls may not connect reliably.
+- The server keeps `isStreamingActive` set once a stream offer starts, and it is not reset on disconnect. If screen sharing gets stuck, restarting the app clears that state.
+- Voice mode selection is stored in the browser with `localStorage`, so it is per device/browser, not per account.
+
+## Requirements
+
+- Linux machine with network access
+- Node.js 18+ and npm
+- TCP port `3000` reachable by all clients
+- A TLS certificate and private key for the hostname clients will open in the browser
+
+## Linux deployment
+
+### 1. Install Node.js
+
+On Ubuntu/Debian:
+
+```bash
+sudo apt update
+sudo apt install -y nodejs npm
+node -v
+npm -v
+```
+
+If your distro packages an older Node version, install a current LTS release instead.
+
+### 2. Copy the project to the server
+
+Example:
+
+```bash
+git clone https://github.com/votizlov/telefon.git telefon
+cd telefon
+npm install
+```
+
+### 3. Add TLS certificate files
+
+The server reads these files from the project root:
+
+- `key.pem`
+- `cert.pem`
+
+If you already have a certificate for your domain, copy it into place:
+
+```bash
+cp /path/to/privkey.pem key.pem
+cp /path/to/fullchain.pem cert.pem
+```
+
+For local testing only, you can create a self-signed certificate:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout key.pem \
+  -out cert.pem \
+  -days 365
+```
+
+Self-signed certificates will trigger browser security warnings unless the certificate is trusted manually.
+
+### 4. Start the app
+
+```bash
+npm start
+```
+
+The app listens on port `3000` by default. You can change it with `PORT`, but the current frontend is hardcoded to connect to port `3000`, so clients will still expect that port unless the code is changed.
+
+Example:
+
+```bash
+PORT=3000 npm start
+```
+
+### 5. Open the firewall
+
+Example with UFW:
+
+```bash
+sudo ufw allow 3000/tcp
+sudo ufw reload
+```
+
+### 6. Access the app
+
+Open this URL from each client machine:
+
+```text
+https://your-server-hostname:3000
+```
+
+Use a hostname that matches the certificate. If you use a self-signed certificate, each client browser must accept or trust it first.
+
+## Run as a systemd service
+
+Create `/etc/systemd/system/telefon.service`:
+
+```ini
+[Unit]
+Description=Telefon voice chat app
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/telefon
+Environment=PORT=3000
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Adjust `User`, `WorkingDirectory`, and `ExecStart` for your server.
+
+Then enable it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now telefon
+sudo systemctl status telefon
+```
+
+## Update on Linux
+
+To pull the latest changes from GitHub on your Linux server:
+
+```bash
+cd /opt/telefon
+git pull origin main
+npm install
+sudo systemctl restart telefon
+sudo systemctl status telefon
+```
+
+Adjust `/opt/telefon` if you cloned the repo somewhere else.
+
+If you are not using `systemd`, restart the app with whatever process manager you use after `git pull` and `npm install`.
+
+## How to use the app
+
+### Join
+
+1. Open `https://your-server-hostname:3000`.
+2. Allow microphone access when the browser asks.
+3. Wait until your Socket.IO ID appears in the sidebar.
+
+### Join the voice room
+
+1. Have another user open the app too.
+2. Each user is connected to the same voice room automatically.
+3. Audio should start automatically when the WebRTC mesh finishes connecting.
+
+### Control your microphone
+
+1. Use `Mute Mic` to fully mute or unmute your microphone.
+2. In the bottom-left `Voice Settings` section, choose `Voice Activated` or `Push to Talk`.
+3. `Voice Activated` transmits only when the browser detects speech.
+4. `Push to Talk` stores your preference locally and requires holding `Space` or the on-screen `Hold to Talk` button to transmit.
+
+### Send chat messages
+
+1. Type a message in the chat input.
+2. Click `Send`.
+3. Your own message appears as `Me: ...`; remote messages show the sender's ID.
+
+### Share your screen
+
+1. Click `Start Streaming`.
+2. Choose a screen or window in the browser prompt.
+3. The local preview appears in the screen area.
+4. Other connected users receive the stream automatically.
+5. Click `Stop Streaming` to end it.
+
+## Operating notes
+
+- Because there is no login system, anyone who can reach the server can join.
+- For internet-facing deployments, use a real domain and a valid certificate.
+- If clients can load the page but calls fail, the usual cause is NAT traversal. Add a TURN server if you need reliable cross-network connectivity.
+- If screen sharing becomes unavailable after an interrupted session, restart the Node process.
+
+## Development
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Run locally:
+
+```bash
+npm start
+```
+
+Main files:
+
+- `server.js`: HTTPS server, static hosting, Socket.IO events
+- `public/script.js`: WebRTC call logic, chat UI, screen-sharing logic
+- `public/index.html`: app layout
+- `public/style.css`: styles

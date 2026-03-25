@@ -44,6 +44,13 @@ io.on('connection', (socket) => {
             from: socket.id,
         });
     });
+
+    socket.on('speakingState', (isSpeaking) => {
+        socket.broadcast.emit('speakingState', {
+            userId: socket.id,
+            isSpeaking: Boolean(isSpeaking),
+        });
+    });
 	
 	// Handle screen sharing signals
     socket.on('screenSignal', (data) => {
