@@ -5,6 +5,7 @@ const ioFactory = typeof window.io === 'function' ? window.io : null;
 const STORAGE_KEYS = {
     audioMode: 'telefon.audioMode',
     nickname: 'telefon.nickname',
+    overlayEnabled: 'telefon.overlayEnabled',
     serverUrl: 'telefon.serverUrl',
     pushToTalkHotkey: 'telefon.pushToTalkHotkey',
 };
@@ -27,6 +28,7 @@ const audioStatusElement = document.getElementById('audioStatus');
 const settingsHintElement = document.getElementById('settingsHint');
 const audioModeInputs = document.querySelectorAll('input[name="audioMode"]');
 const nicknameInput = document.getElementById('nicknameInput');
+const overlayEnabledInput = document.getElementById('overlayEnabledInput');
 const serverUrlInput = document.getElementById('serverUrlInput');
 const pushToTalkHotkeyInput = document.getElementById('pushToTalkHotkeyInput');
 const screenSharingSection = document.getElementById('screenSharingSection');
@@ -54,6 +56,7 @@ let screenPeerConnection = null;
 let activeStreamerId = null;
 let serverUrl = loadServerUrl();
 let nickname = loadNickname();
+let overlayEnabled = loadOverlayEnabled();
 let audioMode = loadAudioMode();
 let pushToTalkHotkey = loadPushToTalkHotkey();
 let isMuted = false;
@@ -71,6 +74,7 @@ let isStoppingScreenShare = false;
 let removeDesktopPushToTalkListener = () => {};
 
 applyStoredNickname();
+applyStoredOverlayEnabled();
 applyStoredAudioMode();
 applyStoredConnectionSettings();
 bindUiEventHandlers();
@@ -93,6 +97,13 @@ if (isDesktopApp && desktopApi.onPushToTalkState) {
 
 window.addEventListener('beforeunload', () => {
     removeDesktopPushToTalkListener();
+
+    if (isDesktopApp && desktopApi && typeof desktopApi.setOverlayState === 'function') {
+        desktopApi.setOverlayState({
+            enabled: overlayEnabled,
+            users: [],
+        });
+    }
 
     if (socket) {
         socket.disconnect();
@@ -183,6 +194,14 @@ function saveNickname(value) {
     updateStoredValues({ nickname: value });
 }
 
+function loadOverlayEnabled() {
+    return Boolean(readStoredValue(STORAGE_KEYS.overlayEnabled, 'overlayEnabled', false));
+}
+
+function saveOverlayEnabled(value) {
+    updateStoredValues({ overlayEnabled: Boolean(value) });
+}
+
 function loadAudioMode() {
     const storedValue = readStoredValue(STORAGE_KEYS.audioMode, 'audioMode', AUDIO_MODE_VOICE_ACTIVATED);
     return storedValue === AUDIO_MODE_PUSH_TO_TALK ? AUDIO_MODE_PUSH_TO_TALK : AUDIO_MODE_VOICE_ACTIVATED;
@@ -210,6 +229,12 @@ function applyStoredNickname() {
     nicknameInput.value = nickname;
 }
 
+function applyStoredOverlayEnabled() {
+    if (overlayEnabledInput) {
+        overlayEnabledInput.checked = overlayEnabled;
+    }
+}
+
 function applyStoredAudioMode() {
     audioModeInputs.forEach((input) => {
         input.checked = input.value === audioMode;
@@ -221,10 +246,16 @@ function applyStoredConnectionSettings() {
     pushToTalkHotkeyInput.value = pushToTalkHotkey;
     serverUrlInput.disabled = !isDesktopApp;
     pushToTalkHotkeyInput.disabled = !isDesktopApp;
+    if (overlayEnabledInput) {
+        overlayEnabledInput.disabled = !isDesktopApp;
+    }
 }
 
 function bindUiEventHandlers() {
     nicknameInput.addEventListener('input', handleNicknameInput);
+    if (overlayEnabledInput) {
+        overlayEnabledInput.addEventListener('change', handleOverlayEnabledChange);
+    }
     serverUrlInput.addEventListener('change', handleServerUrlChange);
     pushToTalkHotkeyInput.addEventListener('keydown', handlePushToTalkHotkeyCapture);
     pushToTalkHotkeyInput.addEventListener('focus', () => pushToTalkHotkeyInput.select());
@@ -312,6 +343,12 @@ function handleServerUrlChange(event) {
     serverUrl = nextServerUrl;
     saveServerUrl(serverUrl);
     reconnectSocket();
+}
+
+function handleOverlayEnabledChange(event) {
+    overlayEnabled = Boolean(event.target.checked);
+    saveOverlayEnabled(overlayEnabled);
+    publishOverlayState();
 }
 
 function handlePushToTalkHotkeyCapture(event) {
@@ -668,6 +705,26 @@ function updateOwnIdentityDisplay() {
     yourIdElement.title = yourId || '';
 }
 
+function getOverlayUsers() {
+    return connectedUsers.map((user) => ({
+        id: user.id,
+        nickname: getDisplayName(user.id),
+        isSpeaking: speakingUsers.has(user.id),
+    }));
+}
+
+function publishOverlayState() {
+    if (!isDesktopApp || !desktopApi || typeof desktopApi.setOverlayState !== 'function') {
+        return;
+    }
+
+    const users = getOverlayUsers();
+    desktopApi.setOverlayState({
+        enabled: overlayEnabled,
+        users,
+    });
+}
+
 function renderUserList() {
     usersListElement.innerHTML = '';
     connectedUsers.forEach((user) => {
@@ -678,6 +735,8 @@ function renderUserList() {
         listItem.classList.toggle('speaking-user', speakingUsers.has(user.id));
         usersListElement.appendChild(listItem);
     });
+
+    publishOverlayState();
 }
 
 function connectSocket() {
@@ -741,6 +800,7 @@ function handleSocketConnect() {
     lastBroadcastSpeakingState = false;
     updateOwnIdentityDisplay();
     updateSpeakingIndicators();
+    publishOverlayState();
     emitSocketEvent('setNickname', nickname);
 
     if (mediaInitializationComplete) {
@@ -790,6 +850,7 @@ function handleSpeakingState(data) {
     }
 
     updateSpeakingIndicators();
+    publishOverlayState();
 }
 
 function handleStreamState(data) {

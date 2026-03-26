@@ -8,6 +8,9 @@ contextBridge.exposeInMainWorld('telefonDesktop', {
     updateSettings(patch) {
         return ipcRenderer.sendSync('settings:update', patch);
     },
+    setOverlayState(payload) {
+        ipcRenderer.send('overlay:update-state', payload);
+    },
     onPushToTalkState(callback) {
         if (typeof callback !== 'function') {
             return () => {};
