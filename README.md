@@ -183,6 +183,34 @@ Configured Electron build targets:
 - Linux: `AppImage`, `deb`
 - macOS: `dmg`
 
+### Build a Windows `.exe`
+
+To create a Windows build, run the packaging step on a Windows machine from the project root:
+
+```powershell
+npm install
+npm run dist -- --win
+```
+
+This uses `electron-builder` with the repo's Windows target (`nsis`) and writes the output to `dist\`.
+
+Expected Windows artifacts:
+
+- `dist\Telefon Setup 1.0.0.exe`: NSIS installer for normal installation
+- `dist\win-unpacked\Telefon.exe`: unpacked executable you can launch directly without running the installer
+
+If you only want the unpacked app folder and not the installer, build the unpacked target instead:
+
+```powershell
+npm run build:desktop -- --win
+```
+
+Then launch:
+
+```powershell
+.\dist\win-unpacked\Telefon.exe
+```
+
 ### Desktop push-to-talk
 
 - In the Electron app, switch the audio mode to `Push to Talk`.

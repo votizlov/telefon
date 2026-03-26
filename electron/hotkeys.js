@@ -1,15 +1,15 @@
 const MODIFIER_TOKEN_ORDER = ['CTRL', 'ALT', 'SHIFT', 'META'];
 
 const MODIFIER_KEY_ALIASES = {
-    CTRL: ['LEFT CTRL', 'RIGHT CTRL'],
-    ALT: ['LEFT ALT', 'RIGHT ALT', 'ALT GR'],
-    SHIFT: ['LEFT SHIFT', 'RIGHT SHIFT'],
-    META: ['LEFT META', 'RIGHT META'],
+    CTRL: ['LEFT CTRL', 'RIGHT CTRL', 'CTRL'],
+    ALT: ['LEFT ALT', 'RIGHT ALT', 'ALT GR', 'ALT'],
+    SHIFT: ['LEFT SHIFT', 'RIGHT SHIFT', 'SHIFT'],
+    META: ['LEFT META', 'RIGHT META', 'META'],
 };
 
 const SPECIAL_KEY_ALIASES = {
     SPACE: ['SPACE'],
-    ENTER: ['ENTER'],
+    ENTER: ['ENTER', 'RETURN'],
     TAB: ['TAB'],
     ESCAPE: ['ESCAPE'],
     BACKSPACE: ['BACKSPACE'],
@@ -18,6 +18,54 @@ const SPECIAL_KEY_ALIASES = {
     DOWN: ['DOWN'],
     LEFT: ['LEFT'],
     RIGHT: ['RIGHT'],
+    'MOUSE LEFT': ['MOUSE LEFT'],
+    'MOUSE RIGHT': ['MOUSE RIGHT'],
+    'MOUSE MIDDLE': ['MOUSE MIDDLE'],
+    'MOUSE X1': ['MOUSE X1'],
+    'MOUSE X2': ['MOUSE X2'],
+};
+
+const SPECIAL_KEY_TOKEN_ALIASES = {
+    SPACE: 'SPACE',
+    ENTER: 'ENTER',
+    RETURN: 'ENTER',
+    TAB: 'TAB',
+    ESCAPE: 'ESCAPE',
+    ESC: 'ESCAPE',
+    BACKSPACE: 'BACKSPACE',
+    DELETE: 'DELETE',
+    UP: 'UP',
+    ARROWUP: 'UP',
+    DOWN: 'DOWN',
+    ARROWDOWN: 'DOWN',
+    LEFT: 'LEFT',
+    ARROWLEFT: 'LEFT',
+    RIGHT: 'RIGHT',
+    ARROWRIGHT: 'RIGHT',
+    MOUSELEFT: 'MOUSE LEFT',
+    'MOUSE LEFT': 'MOUSE LEFT',
+    MOUSE1: 'MOUSE LEFT',
+    'MOUSE 1': 'MOUSE LEFT',
+    MOUSERIGHT: 'MOUSE RIGHT',
+    'MOUSE RIGHT': 'MOUSE RIGHT',
+    MOUSE2: 'MOUSE RIGHT',
+    'MOUSE 2': 'MOUSE RIGHT',
+    MOUSEMIDDLE: 'MOUSE MIDDLE',
+    'MOUSE MIDDLE': 'MOUSE MIDDLE',
+    MOUSE3: 'MOUSE MIDDLE',
+    'MOUSE 3': 'MOUSE MIDDLE',
+    MOUSEBACK: 'MOUSE X1',
+    'MOUSE BACK': 'MOUSE X1',
+    MOUSEX1: 'MOUSE X1',
+    'MOUSE X1': 'MOUSE X1',
+    MOUSE4: 'MOUSE X1',
+    'MOUSE 4': 'MOUSE X1',
+    MOUSEFORWARD: 'MOUSE X2',
+    'MOUSE FORWARD': 'MOUSE X2',
+    MOUSEX2: 'MOUSE X2',
+    'MOUSE X2': 'MOUSE X2',
+    MOUSE5: 'MOUSE X2',
+    'MOUSE 5': 'MOUSE X2',
 };
 
 function normalizeModifierToken(token) {
@@ -53,8 +101,8 @@ function normalizeKeyToken(token) {
         return value;
     }
 
-    if (value in SPECIAL_KEY_ALIASES) {
-        return value;
+    if (value in SPECIAL_KEY_TOKEN_ALIASES) {
+        return SPECIAL_KEY_TOKEN_ALIASES[value];
     }
 
     return null;
@@ -90,6 +138,16 @@ function formatToken(token) {
         return 'Left';
     case 'RIGHT':
         return 'Right';
+    case 'MOUSE LEFT':
+        return 'MouseLeft';
+    case 'MOUSE RIGHT':
+        return 'MouseRight';
+    case 'MOUSE MIDDLE':
+        return 'MouseMiddle';
+    case 'MOUSE X1':
+        return 'MouseBack';
+    case 'MOUSE X2':
+        return 'MouseForward';
     default:
         return token;
     }

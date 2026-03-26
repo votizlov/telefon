@@ -34,7 +34,8 @@
     "appId": "com.votizlov.telefon",
     "productName": "Telefon",
     "asarUnpack": [
-      "node_modules/node-global-key-listener/**/*"
+      "node_modules/node-global-key-listener/**/*",
+      "scripts/win-global-input-listener.ps1"
     ],
     "files": [
       "electron/**/*",

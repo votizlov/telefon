@@ -16,6 +16,44 @@ const VOICE_ACTIVITY_THRESHOLD = 0.035;
 const VOICE_ACTIVITY_HOLD_MS = 350;
 const DEFAULT_DESKTOP_SERVER_URL = 'https://127.0.0.1:3000';
 const DEFAULT_DESKTOP_PUSH_TO_TALK_HOTKEY = 'Alt+Space';
+const HOTKEY_MODIFIER_ORDER = ['Ctrl', 'Alt', 'Shift', 'Meta'];
+const HOTKEY_MODIFIER_ALIASES = {
+    Control: 'Ctrl',
+    Alt: 'Alt',
+    Shift: 'Shift',
+    Meta: 'Meta',
+};
+const HOTKEY_MODIFIER_EVENT_PROPERTIES = {
+    Ctrl: 'ctrlKey',
+    Alt: 'altKey',
+    Shift: 'shiftKey',
+    Meta: 'metaKey',
+};
+const HOTKEY_SPECIAL_KEY_ALIASES = {
+    Enter: 'Enter',
+    Return: 'Enter',
+    Tab: 'Tab',
+    Escape: 'Escape',
+    Esc: 'Escape',
+    Backspace: 'Backspace',
+    Delete: 'Delete',
+    ArrowUp: 'Up',
+    ArrowDown: 'Down',
+    ArrowLeft: 'Left',
+    ArrowRight: 'Right',
+    MouseLeft: 'MouseLeft',
+    MouseRight: 'MouseRight',
+    MouseMiddle: 'MouseMiddle',
+    MouseBack: 'MouseBack',
+    MouseForward: 'MouseForward',
+};
+const HOTKEY_MATCHER_MOUSE_BUTTONS = {
+    0: 'MouseLeft',
+    1: 'MouseMiddle',
+    2: 'MouseRight',
+    3: 'MouseBack',
+    4: 'MouseForward',
+};
 
 const desktopSettings = isDesktopApp && desktopApi.getSettings ? desktopApi.getSettings() : {};
 
@@ -61,6 +99,9 @@ let audioMode = loadAudioMode();
 let pushToTalkHotkey = loadPushToTalkHotkey();
 let isMuted = false;
 let isPushToTalkActive = false;
+let isPushToTalkButtonActive = false;
+let isFocusedWindowPushToTalkActive = false;
+let isDesktopGlobalPushToTalkActive = false;
 let isVoiceDetected = false;
 let audioContext = null;
 let analyser = null;
@@ -72,6 +113,7 @@ let mediaInitializationComplete = false;
 let lastBroadcastSpeakingState = false;
 let isStoppingScreenShare = false;
 let removeDesktopPushToTalkListener = () => {};
+const focusedWindowHotkeyState = new Set();
 
 applyStoredNickname();
 applyStoredOverlayEnabled();
@@ -86,12 +128,8 @@ initializeMicrophone();
 
 if (isDesktopApp && desktopApi.onPushToTalkState) {
     removeDesktopPushToTalkListener = desktopApi.onPushToTalkState((isActive) => {
-        if (audioMode !== AUDIO_MODE_PUSH_TO_TALK) {
-            return;
-        }
-
-        isPushToTalkActive = isActive;
-        updateMicrophoneState(true);
+        isDesktopGlobalPushToTalkActive = Boolean(isActive);
+        syncPushToTalkState(true);
     });
 }
 
@@ -258,6 +296,8 @@ function bindUiEventHandlers() {
     }
     serverUrlInput.addEventListener('change', handleServerUrlChange);
     pushToTalkHotkeyInput.addEventListener('keydown', handlePushToTalkHotkeyCapture);
+    pushToTalkHotkeyInput.addEventListener('mousedown', handlePushToTalkHotkeyMouseCapture);
+    pushToTalkHotkeyInput.addEventListener('contextmenu', handlePushToTalkHotkeyContextMenu);
     pushToTalkHotkeyInput.addEventListener('focus', () => pushToTalkHotkeyInput.select());
 
     audioModeInputs.forEach((input) => {
@@ -272,21 +312,24 @@ function bindUiEventHandlers() {
 
     pushToTalkButton.addEventListener('pointerdown', (event) => {
         event.preventDefault();
-        setPushToTalkActive(true);
+        setPushToTalkButtonActive(true);
     });
-    pushToTalkButton.addEventListener('pointerup', () => setPushToTalkActive(false));
-    pushToTalkButton.addEventListener('pointerleave', () => setPushToTalkActive(false));
-    pushToTalkButton.addEventListener('pointercancel', () => setPushToTalkActive(false));
+    pushToTalkButton.addEventListener('pointerup', () => setPushToTalkButtonActive(false));
+    pushToTalkButton.addEventListener('pointerleave', () => setPushToTalkButtonActive(false));
+    pushToTalkButton.addEventListener('pointercancel', () => setPushToTalkButtonActive(false));
 
     if (!isDesktopApp) {
         window.addEventListener('keydown', handleBrowserPushToTalkKeyDown);
         window.addEventListener('keyup', handleBrowserPushToTalkKeyUp);
+    } else {
+        window.addEventListener('keydown', handleDesktopPushToTalkKeyDown);
+        window.addEventListener('keyup', handleDesktopPushToTalkKeyUp);
+        window.addEventListener('mousedown', handleDesktopPushToTalkMouseDown);
+        window.addEventListener('mouseup', handleDesktopPushToTalkMouseUp);
     }
 
     window.addEventListener('blur', () => {
-        if (!isDesktopApp) {
-            setPushToTalkActive(false);
-        }
+        resetFocusedWindowPushToTalkState();
     });
     window.addEventListener('pointerdown', resumeAudioContextIfNeeded);
     window.addEventListener('keydown', resumeAudioContextIfNeeded);
@@ -357,12 +400,13 @@ function handlePushToTalkHotkeyCapture(event) {
     }
 
     event.preventDefault();
+    event.stopPropagation();
 
     if (event.key === 'Backspace' || event.key === 'Delete' || event.key === 'Escape') {
         pushToTalkHotkey = '';
         pushToTalkHotkeyInput.value = '';
         savePushToTalkHotkey(pushToTalkHotkey);
-        isPushToTalkActive = false;
+        resetPushToTalkSources();
         updateMicrophoneState(true);
         return;
     }
@@ -375,7 +419,34 @@ function handlePushToTalkHotkeyCapture(event) {
     pushToTalkHotkey = capturedHotkey;
     pushToTalkHotkeyInput.value = pushToTalkHotkey;
     savePushToTalkHotkey(pushToTalkHotkey);
+    syncFocusedWindowPushToTalkState();
     updateMicrophoneState(true);
+}
+
+function handlePushToTalkHotkeyMouseCapture(event) {
+    if (!isDesktopApp || event.button === 0) {
+        return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const capturedHotkey = hotkeyFromMouseEvent(event);
+    if (!capturedHotkey) {
+        return;
+    }
+
+    pushToTalkHotkey = capturedHotkey;
+    pushToTalkHotkeyInput.value = pushToTalkHotkey;
+    savePushToTalkHotkey(pushToTalkHotkey);
+    syncFocusedWindowPushToTalkState();
+    updateMicrophoneState(true);
+}
+
+function handlePushToTalkHotkeyContextMenu(event) {
+    if (isDesktopApp) {
+        event.preventDefault();
+    }
 }
 
 function handleAudioModeChange(event) {
@@ -383,7 +454,7 @@ function handleAudioModeChange(event) {
     saveAudioMode(audioMode);
 
     if (audioMode !== AUDIO_MODE_PUSH_TO_TALK) {
-        isPushToTalkActive = false;
+        resetPushToTalkSources();
     }
 
     resumeAudioContextIfNeeded();
@@ -396,7 +467,7 @@ function handleBrowserPushToTalkKeyDown(event) {
     }
 
     event.preventDefault();
-    setPushToTalkActive(true);
+    setFocusedWindowPushToTalkActive(true);
 }
 
 function handleBrowserPushToTalkKeyUp(event) {
@@ -408,7 +479,7 @@ function handleBrowserPushToTalkKeyUp(event) {
         event.preventDefault();
     }
 
-    setPushToTalkActive(false);
+    setFocusedWindowPushToTalkActive(false);
 }
 
 function hotkeyFromKeyboardEvent(event) {
@@ -435,6 +506,34 @@ function hotkeyFromKeyboardEvent(event) {
     return [...modifierTokens, key].join('+');
 }
 
+function hotkeyFromMouseEvent(event) {
+    const mouseButtonKey = normalizeHotkeyMouseButton(event.button);
+    if (!mouseButtonKey) {
+        return '';
+    }
+
+    return [...getHotkeyModifierTokens(event), mouseButtonKey].join('+');
+}
+
+function getHotkeyModifierTokens(event) {
+    const modifierTokens = [];
+
+    if (event.ctrlKey) {
+        modifierTokens.push('Ctrl');
+    }
+    if (event.altKey) {
+        modifierTokens.push('Alt');
+    }
+    if (event.shiftKey) {
+        modifierTokens.push('Shift');
+    }
+    if (event.metaKey) {
+        modifierTokens.push('Meta');
+    }
+
+    return modifierTokens;
+}
+
 function normalizeHotkeyKey(key) {
     if (typeof key !== 'string') {
         return '';
@@ -455,6 +554,7 @@ function normalizeHotkeyKey(key) {
 
     const specialKeys = {
         Enter: 'Enter',
+        Return: 'Enter',
         Tab: 'Tab',
         Escape: 'Escape',
         Esc: 'Escape',
@@ -481,6 +581,68 @@ function normalizeHotkeyKey(key) {
     return '';
 }
 
+function normalizeHotkeyMouseButton(button) {
+    return HOTKEY_MATCHER_MOUSE_BUTTONS[button] || '';
+}
+
+function parseHotkeyForMatcher(value) {
+    if (typeof value !== 'string' || !value.trim()) {
+        return null;
+    }
+
+    const rawTokens = value.split('+').map((token) => token.trim()).filter(Boolean);
+    if (rawTokens.length === 0) {
+        return null;
+    }
+
+    const modifiers = [];
+    let key = '';
+
+    rawTokens.forEach((rawToken) => {
+        const modifierToken = normalizeMatcherModifierToken(rawToken);
+        if (modifierToken) {
+            if (!modifiers.includes(modifierToken)) {
+                modifiers.push(modifierToken);
+            }
+            return;
+        }
+
+        if (!key) {
+            key = normalizeMatcherHotkeyKey(rawToken);
+        } else {
+            key = '';
+        }
+    });
+
+    if (!key) {
+        return null;
+    }
+
+    modifiers.sort((left, right) => HOTKEY_MODIFIER_ORDER.indexOf(left) - HOTKEY_MODIFIER_ORDER.indexOf(right));
+    return { modifiers, key };
+}
+
+function normalizeMatcherModifierToken(token) {
+    return HOTKEY_MODIFIER_ALIASES[String(token || '').trim()] || '';
+}
+
+function normalizeMatcherHotkeyKey(token) {
+    const normalizedToken = String(token || '').trim();
+    if (!normalizedToken) {
+        return '';
+    }
+
+    if (normalizedToken.length === 1 && /[a-z0-9]/i.test(normalizedToken)) {
+        return normalizedToken.toUpperCase();
+    }
+
+    if (/^F([1-9]|1[0-2])$/i.test(normalizedToken)) {
+        return normalizedToken.toUpperCase();
+    }
+
+    return HOTKEY_SPECIAL_KEY_ALIASES[normalizedToken] || '';
+}
+
 function isEditableElement(element) {
     if (!element) {
         return false;
@@ -490,18 +652,127 @@ function isEditableElement(element) {
     return element.isContentEditable || tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT';
 }
 
-function setPushToTalkActive(isActive) {
-    if (audioMode !== AUDIO_MODE_PUSH_TO_TALK) {
+function setPushToTalkButtonActive(isActive) {
+    if (isPushToTalkButtonActive === isActive) {
         return;
     }
 
-    if (isPushToTalkActive === isActive) {
+    isPushToTalkButtonActive = isActive;
+    syncPushToTalkState(true);
+}
+
+function setFocusedWindowPushToTalkActive(isActive) {
+    if (isFocusedWindowPushToTalkActive === isActive) {
         return;
     }
 
-    isPushToTalkActive = isActive;
+    isFocusedWindowPushToTalkActive = isActive;
+    syncPushToTalkState(true);
+}
+
+function syncPushToTalkState(forceUiUpdate = false) {
+    const nextIsPushToTalkActive = audioMode === AUDIO_MODE_PUSH_TO_TALK
+        && (isPushToTalkButtonActive || isFocusedWindowPushToTalkActive || isDesktopGlobalPushToTalkActive);
+
+    if (isPushToTalkActive === nextIsPushToTalkActive && !forceUiUpdate) {
+        return;
+    }
+
+    isPushToTalkActive = nextIsPushToTalkActive;
     resumeAudioContextIfNeeded();
-    updateMicrophoneState(true);
+    updateMicrophoneState(forceUiUpdate);
+}
+
+function resetPushToTalkSources() {
+    isPushToTalkButtonActive = false;
+    isFocusedWindowPushToTalkActive = false;
+    isDesktopGlobalPushToTalkActive = false;
+    focusedWindowHotkeyState.clear();
+    syncPushToTalkState(true);
+}
+
+function resetFocusedWindowPushToTalkState() {
+    focusedWindowHotkeyState.clear();
+    setFocusedWindowPushToTalkActive(false);
+}
+
+function syncFocusedWindowPushToTalkState() {
+    if (!isDesktopApp) {
+        return;
+    }
+
+    const parsedHotkey = parseHotkeyForMatcher(pushToTalkHotkey);
+    if (!parsedHotkey) {
+        setFocusedWindowPushToTalkActive(false);
+        return;
+    }
+
+    const isHotkeyActive = focusedWindowHotkeyState.has(parsedHotkey.key)
+        && parsedHotkey.modifiers.every((modifier) => focusedWindowHotkeyState.has(modifier));
+    setFocusedWindowPushToTalkActive(isHotkeyActive);
+}
+
+function trackFocusedWindowModifierState(event) {
+    Object.values(HOTKEY_MODIFIER_ALIASES).forEach((token) => {
+        if (event[HOTKEY_MODIFIER_EVENT_PROPERTIES[token]]) {
+            focusedWindowHotkeyState.add(token);
+        } else {
+            focusedWindowHotkeyState.delete(token);
+        }
+    });
+}
+
+function handleDesktopPushToTalkKeyDown(event) {
+    if (event.repeat) {
+        return;
+    }
+
+    trackFocusedWindowModifierState(event);
+    const key = normalizeMatcherHotkeyKey(event.key);
+    if (key) {
+        focusedWindowHotkeyState.add(key);
+    }
+
+    syncFocusedWindowPushToTalkState();
+}
+
+function handleDesktopPushToTalkKeyUp(event) {
+    const key = normalizeMatcherHotkeyKey(event.key);
+    if (key) {
+        focusedWindowHotkeyState.delete(key);
+    }
+
+    trackFocusedWindowModifierState(event);
+    syncFocusedWindowPushToTalkState();
+}
+
+function handleDesktopPushToTalkMouseDown(event) {
+    const key = normalizeHotkeyMouseButton(event.button);
+    if (!key) {
+        return;
+    }
+
+    trackFocusedWindowModifierState(event);
+    focusedWindowHotkeyState.add(key);
+    syncFocusedWindowPushToTalkState();
+
+    if (pushToTalkHotkey.includes(key)) {
+        event.preventDefault();
+    }
+}
+
+function handleDesktopPushToTalkMouseUp(event) {
+    const key = normalizeHotkeyMouseButton(event.button);
+    if (key) {
+        focusedWindowHotkeyState.delete(key);
+    }
+
+    trackFocusedWindowModifierState(event);
+    syncFocusedWindowPushToTalkState();
+
+    if (pushToTalkHotkey.includes(key)) {
+        event.preventDefault();
+    }
 }
 
 function resumeAudioContextIfNeeded() {

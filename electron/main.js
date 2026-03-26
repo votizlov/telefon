@@ -1,7 +1,8 @@
+const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 const { app, BrowserWindow, ipcMain, screen } = require('electron/main');
 const Store = require('electron-store');
-const { GlobalKeyboardListener } = require('node-global-key-listener');
 const { normalizeHotkey, isHotkeyPressed } = require('./hotkeys');
 
 const DEFAULT_SERVER_URL = process.env.TELEFON_SERVER_URL || 'https://127.0.0.1:3000';
@@ -37,11 +38,219 @@ let mainWindow = null;
 let overlayWindow = null;
 let keyboardListener = null;
 let keyboardListenerReady = null;
+let windowsInputListenerProcess = null;
+let windowsInputListenerBuffer = '';
+let windowsInputDownState = {};
 let lastPushToTalkState = false;
+let isQuitting = false;
 let overlayState = {
     enabled: true,
     users: [],
 };
+
+function resolveKeyboardServerPath() {
+    if (process.platform !== 'win32') {
+        return '';
+    }
+
+    const packagedPath = path.join(
+        process.resourcesPath,
+        'app.asar.unpacked',
+        'node_modules',
+        'node-global-key-listener',
+        'bin',
+        'WinKeyServer.exe'
+    );
+    const developmentPath = path.join(
+        __dirname,
+        '..',
+        'node_modules',
+        'node-global-key-listener',
+        'bin',
+        'WinKeyServer.exe'
+    );
+
+    if (fs.existsSync(packagedPath)) {
+        return packagedPath;
+    }
+
+    if (fs.existsSync(developmentPath)) {
+        return developmentPath;
+    }
+
+    console.error('Global keyboard listener helper executable was not found.', {
+        packagedPath,
+        developmentPath,
+        isPackaged: app.isPackaged,
+    });
+    return '';
+}
+
+function resolveWindowsInputListenerScriptPath() {
+    const packagedPath = path.join(
+        process.resourcesPath,
+        'app.asar.unpacked',
+        'scripts',
+        'win-global-input-listener.ps1'
+    );
+    const developmentPath = path.join(
+        __dirname,
+        '..',
+        'scripts',
+        'win-global-input-listener.ps1'
+    );
+
+    if (fs.existsSync(packagedPath)) {
+        return packagedPath;
+    }
+
+    if (fs.existsSync(developmentPath)) {
+        return developmentPath;
+    }
+
+    console.error('Windows global input listener script was not found.', {
+        packagedPath,
+        developmentPath,
+        isPackaged: app.isPackaged,
+    });
+    return '';
+}
+
+function getKeyboardListenerConfig() {
+    const keyboardListenerConfig = {
+        windows: {
+            onError(errorCode) {
+                console.error('Global keyboard listener exited.', { errorCode });
+            },
+            onInfo(message) {
+                const trimmedMessage = String(message || '').trim();
+                if (trimmedMessage) {
+                    console.info('Global keyboard listener:', trimmedMessage);
+                }
+            },
+        },
+    };
+
+    const serverPath = resolveKeyboardServerPath();
+    if (serverPath) {
+        keyboardListenerConfig.windows.serverPath = serverPath;
+    }
+
+    return keyboardListenerConfig;
+}
+
+function getCurrentPushToTalkHotkey() {
+    return getPublicSettings().pushToTalkHotkey;
+}
+
+function sendCurrentPushToTalkState(downState) {
+    const hotkey = getCurrentPushToTalkHotkey();
+    sendPushToTalkState(Boolean(hotkey) && isHotkeyPressed(downState, hotkey));
+}
+
+function updateWindowsInputDownState(eventState, keyName) {
+    if (!keyName) {
+        return;
+    }
+
+    windowsInputDownState[keyName] = eventState === 'DOWN';
+    sendCurrentPushToTalkState(windowsInputDownState);
+}
+
+function handleWindowsInputListenerStdout(chunk) {
+    windowsInputListenerBuffer += chunk.toString();
+    const lines = windowsInputListenerBuffer.split(/\r?\n/);
+    windowsInputListenerBuffer = lines.pop() || '';
+
+    lines.forEach((line) => {
+        const trimmedLine = line.trim();
+        if (!trimmedLine) {
+            return;
+        }
+
+        const [eventState, keyName] = trimmedLine.split('|');
+        if ((eventState !== 'DOWN' && eventState !== 'UP') || !keyName) {
+            console.warn('Ignoring malformed Windows input listener event.', trimmedLine);
+            return;
+        }
+
+        updateWindowsInputDownState(eventState, keyName.trim().toUpperCase());
+    });
+}
+
+function stopWindowsInputListener() {
+    if (!windowsInputListenerProcess) {
+        return;
+    }
+
+    windowsInputListenerProcess.removeAllListeners();
+    if (windowsInputListenerProcess.stdout) {
+        windowsInputListenerProcess.stdout.removeAllListeners();
+    }
+    if (windowsInputListenerProcess.stderr) {
+        windowsInputListenerProcess.stderr.removeAllListeners();
+    }
+    windowsInputListenerProcess.kill();
+    windowsInputListenerProcess = null;
+}
+
+function ensureWindowsInputListener() {
+    if (windowsInputListenerProcess) {
+        return Promise.resolve();
+    }
+
+    const scriptPath = resolveWindowsInputListenerScriptPath();
+    if (!scriptPath) {
+        return Promise.resolve();
+    }
+
+    windowsInputListenerBuffer = '';
+    windowsInputDownState = {};
+    windowsInputListenerProcess = spawn(
+        'powershell.exe',
+        [
+            '-NoLogo',
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            scriptPath,
+        ],
+        {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true,
+        }
+    );
+
+    windowsInputListenerProcess.stdout.on('data', handleWindowsInputListenerStdout);
+    windowsInputListenerProcess.stderr.on('data', (chunk) => {
+        const message = chunk.toString().trim();
+        if (message) {
+            console.error('Windows global input listener error:', message);
+        }
+    });
+    windowsInputListenerProcess.on('close', (code) => {
+        windowsInputListenerProcess = null;
+        windowsInputListenerBuffer = '';
+        windowsInputDownState = {};
+        sendPushToTalkState(false);
+
+        if (!isQuitting) {
+            console.error('Windows global input listener exited unexpectedly.', { code });
+            setTimeout(() => {
+                ensureWindowsInputListener().catch((error) => {
+                    console.error('Failed to restart the Windows global input listener.', error);
+                });
+            }, 1000);
+        }
+    });
+    windowsInputListenerProcess.on('error', (error) => {
+        console.error('Failed to start the Windows global input listener.', error);
+    });
+
+    return Promise.resolve();
+}
 
 function normalizeServerUrl(value) {
     if (typeof value !== 'string') {
@@ -106,14 +315,18 @@ function sendPushToTalkState(isActive) {
 }
 
 function ensureKeyboardListener() {
+    if (process.platform === 'win32') {
+        return ensureWindowsInputListener();
+    }
+
     if (keyboardListener) {
         return keyboardListenerReady;
     }
 
-    keyboardListener = new GlobalKeyboardListener();
+    const { GlobalKeyboardListener } = require('node-global-key-listener');
+    keyboardListener = new GlobalKeyboardListener(getKeyboardListenerConfig());
     keyboardListenerReady = keyboardListener.addListener((_event, downState) => {
-        const hotkey = getPublicSettings().pushToTalkHotkey;
-        sendPushToTalkState(Boolean(hotkey) && isHotkeyPressed(downState, hotkey));
+        sendCurrentPushToTalkState(downState);
     }).catch((error) => {
         console.error('Failed to start the global keyboard listener.', error);
     });
@@ -264,6 +477,9 @@ function registerIpcHandlers() {
         if (Object.prototype.hasOwnProperty.call(nextSettings, 'pushToTalkHotkey') && !nextSettings.pushToTalkHotkey) {
             sendPushToTalkState(false);
         }
+        if (Object.prototype.hasOwnProperty.call(nextSettings, 'pushToTalkHotkey') && process.platform === 'win32') {
+            sendCurrentPushToTalkState(windowsInputDownState);
+        }
 
         if (Object.prototype.hasOwnProperty.call(nextSettings, 'overlayEnabled')) {
             overlayState.enabled = nextSettings.overlayEnabled;
@@ -328,7 +544,9 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+    isQuitting = true;
     if (keyboardListener) {
         keyboardListener.kill();
     }
+    stopWindowsInputListener();
 });
