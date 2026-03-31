@@ -8,6 +8,7 @@ Telefon is a small browser-based voice chat app built with Node.js, Express, Soc
 - user-controlled microphone modes with persistent local settings
 - local nicknames that are shown to other connected users
 - an Electron desktop client with native global push-to-talk support
+- an optional desktop overlay with a saved draggable position
 
 The server entrypoint is `server.js`. The frontend lives in `public/index.html` and `public/script.js`.
 
@@ -23,6 +24,7 @@ The project now has two runtime modes:
 - Voice calls and screen sharing use browser WebRTC APIs.
 - HTTPS is required because browsers block microphone and screen-capture APIs on insecure origins.
 - The Electron client uses `electron/main.js` and `electron/preload.js` to persist desktop settings and receive native global push-to-talk events.
+- The desktop overlay position is stored per Electron client user and reused on the next launch.
 
 ## Current behavior and limits
 
@@ -217,6 +219,7 @@ Then launch:
 - Set a desktop hotkey in the bottom-left settings panel.
 - That hotkey works even when the Electron window is not focused.
 - The web version still only supports browser-focused push-to-talk.
+- If you enable `Unlock overlay position`, the desktop overlay can be dragged and its position is saved when you release the mouse.
 
 ## Run as a systemd service
 
@@ -289,6 +292,7 @@ If you are not using `systemd`, restart the app with whatever process manager yo
 5. `Voice Activated` transmits only when the browser detects speech.
 6. In the web client, `Push to Talk` uses `Space` or the on-screen `Hold to Talk` button.
 7. In the Electron client, `Push to Talk` can use a configurable global desktop hotkey or the on-screen button.
+8. In the Electron client, use `Show desktop overlay` to display the floating overlay and `Unlock overlay position` to drag it to a new saved location.
 
 ### Send chat messages
 

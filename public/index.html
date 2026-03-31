@@ -35,9 +35,25 @@
                     <label class="settings-label" for="pushToTalkHotkeyInput">Desktop Push-to-Talk Hotkey</label>
                     <input id="pushToTalkHotkeyInput" class="settings-input" type="text" placeholder="Press a hotkey combination">
                 </div>
-                <label id="desktopOverlaySettings" class="setting-option desktop-only" for="overlayEnabledInput">
-                    <input id="overlayEnabledInput" type="checkbox">
-                    <span>Show desktop overlay</span>
+                <label id="desktopOverlaySettings" class="toggle-setting desktop-only" for="overlayEnabledInput">
+                    <span class="toggle-setting-copy">
+                        <span class="toggle-setting-label">Show desktop overlay</span>
+                        <span class="toggle-setting-description">Display the floating desktop participant list.</span>
+                    </span>
+                    <span class="toggle-switch">
+                        <input id="overlayEnabledInput" class="toggle-switch-input" type="checkbox">
+                        <span class="toggle-switch-ui" aria-hidden="true"></span>
+                    </span>
+                </label>
+                <label id="desktopOverlayUnlockSettings" class="toggle-setting desktop-only" for="overlayUnlockedInput">
+                    <span class="toggle-setting-copy">
+                        <span class="toggle-setting-label">Unlock overlay position</span>
+                        <span class="toggle-setting-description">Drag the overlay and save the new position on release.</span>
+                    </span>
+                    <span class="toggle-switch">
+                        <input id="overlayUnlockedInput" class="toggle-switch-input" type="checkbox">
+                        <span class="toggle-switch-ui" aria-hidden="true"></span>
+                    </span>
                 </label>
                 <label class="setting-option" for="modeVoiceActivated">
                     <input id="modeVoiceActivated" type="radio" name="audioMode" value="voice-activated">

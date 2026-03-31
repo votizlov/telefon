@@ -29,6 +29,8 @@ const settingsStore = new Store({
         serverUrl: DEFAULT_SERVER_URL,
         nickname: '',
         overlayEnabled: true,
+        overlayUnlocked: false,
+        overlayPosition: null,
         audioMode: 'voice-activated',
         pushToTalkHotkey: DEFAULT_PUSH_TO_TALK_HOTKEY,
     },
@@ -44,9 +46,11 @@ let windowsInputDownState = {};
 let lastPushToTalkState = false;
 let isQuitting = false;
 let overlayState = {
-    enabled: true,
+    enabled: Boolean(settingsStore.get('overlayEnabled')),
+    unlocked: Boolean(settingsStore.get('overlayUnlocked')),
     users: [],
 };
+let overlayDragState = null;
 
 function resolveKeyboardServerPath() {
     if (process.platform !== 'win32') {
@@ -270,6 +274,7 @@ function getPublicSettings() {
         serverUrl: normalizeServerUrl(settingsStore.get('serverUrl')),
         nickname: String(settingsStore.get('nickname') || '').trim().slice(0, 24),
         overlayEnabled: Boolean(settingsStore.get('overlayEnabled')),
+        overlayUnlocked: Boolean(settingsStore.get('overlayUnlocked')),
         audioMode: AUDIO_MODES.has(settingsStore.get('audioMode')) ? settingsStore.get('audioMode') : 'voice-activated',
         pushToTalkHotkey: normalizeHotkey(settingsStore.get('pushToTalkHotkey')) || '',
     };
@@ -292,6 +297,10 @@ function sanitizeSettingsPatch(patch) {
 
     if (Object.prototype.hasOwnProperty.call(patch, 'overlayEnabled')) {
         nextSettings.overlayEnabled = Boolean(patch.overlayEnabled);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, 'overlayUnlocked')) {
+        nextSettings.overlayUnlocked = Boolean(patch.overlayUnlocked);
     }
 
     if (Object.prototype.hasOwnProperty.call(patch, 'audioMode')) {
@@ -341,6 +350,9 @@ function sanitizeOverlayState(payload) {
         enabled: Object.prototype.hasOwnProperty.call(nextState, 'enabled')
             ? Boolean(nextState.enabled)
             : Boolean(settingsStore.get('overlayEnabled')),
+        unlocked: Object.prototype.hasOwnProperty.call(nextState, 'unlocked')
+            ? Boolean(nextState.unlocked)
+            : Boolean(settingsStore.get('overlayUnlocked')),
         users: users
             .map((user) => ({
                 id: String((user && user.id) || '').trim(),
@@ -356,17 +368,117 @@ function getOverlayHeight(userCount) {
     return Math.max(OVERLAY_MIN_HEIGHT, Math.min(OVERLAY_MAX_HEIGHT, computedHeight));
 }
 
-function getOverlayBounds() {
-    const display = screen.getPrimaryDisplay();
-    const { x, y, width, height } = display.workArea;
-    const overlayHeight = getOverlayHeight(overlayState.users.length);
+function sanitizeOverlayPosition(value) {
+    if (!value || typeof value !== 'object') {
+        return null;
+    }
+
+    const x = Number(value.x);
+    const y = Number(value.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return null;
+    }
+
+    return {
+        x: Math.round(x),
+        y: Math.round(y),
+    };
+}
+
+function getStoredOverlayPosition() {
+    return sanitizeOverlayPosition(settingsStore.get('overlayPosition'));
+}
+
+function getOverlaySize(display) {
+    const { width, height } = display.workArea;
+
+    return {
+        width: Math.min(OVERLAY_WIDTH, Math.max(1, width - (OVERLAY_EDGE_OFFSET * 2))),
+        height: Math.min(getOverlayHeight(overlayState.users.length), Math.max(1, height - (OVERLAY_EDGE_OFFSET * 2))),
+    };
+}
+
+function getDefaultOverlayPosition(display, size) {
+    const { x, y, height } = display.workArea;
 
     return {
         x: x + OVERLAY_EDGE_OFFSET,
         y: y + Math.max(OVERLAY_EDGE_OFFSET, Math.round(height * OVERLAY_TOP_RATIO)),
-        width: Math.min(OVERLAY_WIDTH, width - (OVERLAY_EDGE_OFFSET * 2)),
-        height: Math.min(overlayHeight, height - (OVERLAY_EDGE_OFFSET * 2)),
     };
+}
+
+function getCurrentOverlayPosition() {
+    if (!overlayWindow || overlayWindow.isDestroyed()) {
+        return null;
+    }
+
+    const { x, y } = overlayWindow.getBounds();
+    return sanitizeOverlayPosition({ x, y });
+}
+
+function getOverlayDisplay(position) {
+    if (position) {
+        return screen.getDisplayNearestPoint({
+            x: Math.round(position.x),
+            y: Math.round(position.y),
+        });
+    }
+
+    return screen.getPrimaryDisplay();
+}
+
+function clampOverlayPosition(position, size, display) {
+    const { x, y, width, height } = display.workArea;
+    const maxX = Math.max(x, x + width - size.width);
+    const maxY = Math.max(y, y + height - size.height);
+
+    return {
+        x: Math.min(Math.max(position.x, x), maxX),
+        y: Math.min(Math.max(position.y, y), maxY),
+    };
+}
+
+function getOverlayBounds(position = null) {
+    const anchorPosition = sanitizeOverlayPosition(position)
+        || getStoredOverlayPosition()
+        || getCurrentOverlayPosition();
+    const display = getOverlayDisplay(anchorPosition);
+    const size = getOverlaySize(display);
+    const nextPosition = clampOverlayPosition(
+        anchorPosition || getDefaultOverlayPosition(display, size),
+        size,
+        display
+    );
+
+    return {
+        x: nextPosition.x,
+        y: nextPosition.y,
+        width: size.width,
+        height: size.height,
+    };
+}
+
+function saveOverlayPosition(bounds) {
+    const nextPosition = sanitizeOverlayPosition(bounds);
+    if (!nextPosition) {
+        return;
+    }
+
+    settingsStore.set('overlayPosition', nextPosition);
+}
+
+function syncOverlayWindowInteractivity() {
+    if (!overlayWindow || overlayWindow.isDestroyed()) {
+        return;
+    }
+
+    if (Boolean(settingsStore.get('overlayUnlocked'))) {
+        overlayWindow.setIgnoreMouseEvents(false);
+        return;
+    }
+
+    overlayDragState = null;
+    overlayWindow.setIgnoreMouseEvents(true, { forward: true });
 }
 
 function sendOverlayState() {
@@ -377,10 +489,73 @@ function sendOverlayState() {
     overlayWindow.webContents.send('overlay:state', overlayState);
 }
 
+function sanitizeOverlayDragPayload(payload) {
+    if (!payload || typeof payload !== 'object') {
+        return null;
+    }
+
+    const screenX = Number(payload.screenX);
+    const screenY = Number(payload.screenY);
+    if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) {
+        return null;
+    }
+
+    return {
+        screenX: Math.round(screenX),
+        screenY: Math.round(screenY),
+    };
+}
+
+function startOverlayDrag(payload) {
+    if (!overlayWindow || overlayWindow.isDestroyed() || !Boolean(settingsStore.get('overlayUnlocked'))) {
+        return;
+    }
+
+    const pointerPosition = sanitizeOverlayDragPayload(payload);
+    if (!pointerPosition) {
+        return;
+    }
+
+    overlayDragState = {
+        startCursorX: pointerPosition.screenX,
+        startCursorY: pointerPosition.screenY,
+        startBounds: overlayWindow.getBounds(),
+    };
+}
+
+function updateOverlayDrag(payload) {
+    if (!overlayWindow || overlayWindow.isDestroyed() || !overlayDragState) {
+        return;
+    }
+
+    const pointerPosition = sanitizeOverlayDragPayload(payload);
+    if (!pointerPosition) {
+        return;
+    }
+
+    const nextBounds = getOverlayBounds({
+        x: overlayDragState.startBounds.x + (pointerPosition.screenX - overlayDragState.startCursorX),
+        y: overlayDragState.startBounds.y + (pointerPosition.screenY - overlayDragState.startCursorY),
+    });
+    overlayWindow.setBounds(nextBounds);
+}
+
+function endOverlayDrag(payload) {
+    if (!overlayWindow || overlayWindow.isDestroyed() || !overlayDragState) {
+        overlayDragState = null;
+        return;
+    }
+
+    updateOverlayDrag(payload);
+    saveOverlayPosition(overlayWindow.getBounds());
+    overlayDragState = null;
+}
+
 function syncOverlayWindowVisibility() {
     const shouldShow = Boolean(settingsStore.get('overlayEnabled')) && overlayState.users.length > 0;
 
     if (!shouldShow) {
+        overlayDragState = null;
         if (overlayWindow && !overlayWindow.isDestroyed()) {
             overlayWindow.hide();
         }
@@ -393,6 +568,7 @@ function syncOverlayWindowVisibility() {
     }
 
     overlayWindow.setBounds(getOverlayBounds());
+    syncOverlayWindowInteractivity();
     sendOverlayState();
     if (!overlayWindow.isVisible()) {
         overlayWindow.showInactive();
@@ -452,13 +628,14 @@ function createOverlayWindow() {
 
     overlayWindow.setAlwaysOnTop(true, 'screen-saver');
     overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    overlayWindow.setIgnoreMouseEvents(true, { forward: true });
+    syncOverlayWindowInteractivity();
     overlayWindow.loadFile(path.join(__dirname, '..', 'public', 'overlay.html'));
     overlayWindow.webContents.on('did-finish-load', () => {
         sendOverlayState();
         syncOverlayWindowVisibility();
     });
     overlayWindow.on('closed', () => {
+        overlayDragState = null;
         overlayWindow = null;
     });
 }
@@ -486,6 +663,12 @@ function registerIpcHandlers() {
             syncOverlayWindowVisibility();
         }
 
+        if (Object.prototype.hasOwnProperty.call(nextSettings, 'overlayUnlocked')) {
+            overlayState.unlocked = nextSettings.overlayUnlocked;
+            syncOverlayWindowInteractivity();
+            sendOverlayState();
+        }
+
         event.returnValue = getPublicSettings();
     });
 
@@ -503,7 +686,20 @@ function registerIpcHandlers() {
 
     ipcMain.on('overlay:update-state', (_event, payload) => {
         overlayState = sanitizeOverlayState(payload);
+        sendOverlayState();
         syncOverlayWindowVisibility();
+    });
+
+    ipcMain.on('overlay:drag-start', (_event, payload) => {
+        startOverlayDrag(payload);
+    });
+
+    ipcMain.on('overlay:drag-move', (_event, payload) => {
+        updateOverlayDrag(payload);
+    });
+
+    ipcMain.on('overlay:drag-end', (_event, payload) => {
+        endOverlayDrag(payload);
     });
 }
 

@@ -192,6 +192,94 @@ body.desktop-app .desktop-only {
     accent-color: #5865f2;
 }
 
+.toggle-setting {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    border: 1px solid #36393f;
+    border-radius: 10px;
+    background-color: #2a2d31;
+    cursor: pointer;
+}
+
+.toggle-setting-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.toggle-setting-label {
+    font-size: 14px;
+    color: #f2f3f5;
+}
+
+.toggle-setting-description {
+    font-size: 12px;
+    line-height: 1.35;
+    color: #8e9297;
+}
+
+.toggle-switch {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.toggle-switch-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+}
+
+.toggle-switch-ui {
+    position: relative;
+    width: 42px;
+    height: 24px;
+    border-radius: 999px;
+    background-color: #4f545c;
+    transition: background-color 120ms ease;
+}
+
+.toggle-switch-ui::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background-color: #fff;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.24);
+    transition: transform 120ms ease;
+}
+
+.toggle-switch-input:checked + .toggle-switch-ui {
+    background-color: #3ba55d;
+}
+
+.toggle-switch-input:checked + .toggle-switch-ui::after {
+    transform: translateX(18px);
+}
+
+.toggle-switch-input:focus-visible + .toggle-switch-ui {
+    outline: 2px solid #5865f2;
+    outline-offset: 2px;
+}
+
+.toggle-switch-input:disabled + .toggle-switch-ui {
+    opacity: 0.5;
+}
+
 .settings-hint {
     font-size: 12px;
     color: #72767d;

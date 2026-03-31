@@ -6,6 +6,7 @@ const STORAGE_KEYS = {
     audioMode: 'telefon.audioMode',
     nickname: 'telefon.nickname',
     overlayEnabled: 'telefon.overlayEnabled',
+    overlayUnlocked: 'telefon.overlayUnlocked',
     serverUrl: 'telefon.serverUrl',
     pushToTalkHotkey: 'telefon.pushToTalkHotkey',
 };
@@ -67,6 +68,7 @@ const settingsHintElement = document.getElementById('settingsHint');
 const audioModeInputs = document.querySelectorAll('input[name="audioMode"]');
 const nicknameInput = document.getElementById('nicknameInput');
 const overlayEnabledInput = document.getElementById('overlayEnabledInput');
+const overlayUnlockedInput = document.getElementById('overlayUnlockedInput');
 const serverUrlInput = document.getElementById('serverUrlInput');
 const pushToTalkHotkeyInput = document.getElementById('pushToTalkHotkeyInput');
 const screenSharingSection = document.getElementById('screenSharingSection');
@@ -95,6 +97,7 @@ let activeStreamerId = null;
 let serverUrl = loadServerUrl();
 let nickname = loadNickname();
 let overlayEnabled = loadOverlayEnabled();
+let overlayUnlocked = loadOverlayUnlocked();
 let audioMode = loadAudioMode();
 let pushToTalkHotkey = loadPushToTalkHotkey();
 let isMuted = false;
@@ -117,6 +120,7 @@ const focusedWindowHotkeyState = new Set();
 
 applyStoredNickname();
 applyStoredOverlayEnabled();
+applyStoredOverlayUnlocked();
 applyStoredAudioMode();
 applyStoredConnectionSettings();
 bindUiEventHandlers();
@@ -185,6 +189,25 @@ function updateStoredValues(patch) {
     });
 }
 
+function readStoredBoolean(storageKey, desktopKey, fallbackValue) {
+    const storedValue = readStoredValue(storageKey, desktopKey, fallbackValue);
+    if (typeof storedValue === 'boolean') {
+        return storedValue;
+    }
+
+    if (typeof storedValue === 'string') {
+        const normalizedValue = storedValue.trim().toLowerCase();
+        if (normalizedValue === 'true') {
+            return true;
+        }
+        if (normalizedValue === 'false') {
+            return false;
+        }
+    }
+
+    return Boolean(storedValue);
+}
+
 function getDefaultServerUrl() {
     if (window.location.protocol === 'https:' || window.location.protocol === 'http:') {
         return window.location.origin;
@@ -233,11 +256,19 @@ function saveNickname(value) {
 }
 
 function loadOverlayEnabled() {
-    return Boolean(readStoredValue(STORAGE_KEYS.overlayEnabled, 'overlayEnabled', false));
+    return readStoredBoolean(STORAGE_KEYS.overlayEnabled, 'overlayEnabled', false);
 }
 
 function saveOverlayEnabled(value) {
     updateStoredValues({ overlayEnabled: Boolean(value) });
+}
+
+function loadOverlayUnlocked() {
+    return readStoredBoolean(STORAGE_KEYS.overlayUnlocked, 'overlayUnlocked', false);
+}
+
+function saveOverlayUnlocked(value) {
+    updateStoredValues({ overlayUnlocked: Boolean(value) });
 }
 
 function loadAudioMode() {
@@ -273,6 +304,12 @@ function applyStoredOverlayEnabled() {
     }
 }
 
+function applyStoredOverlayUnlocked() {
+    if (overlayUnlockedInput) {
+        overlayUnlockedInput.checked = overlayUnlocked;
+    }
+}
+
 function applyStoredAudioMode() {
     audioModeInputs.forEach((input) => {
         input.checked = input.value === audioMode;
@@ -287,12 +324,18 @@ function applyStoredConnectionSettings() {
     if (overlayEnabledInput) {
         overlayEnabledInput.disabled = !isDesktopApp;
     }
+    if (overlayUnlockedInput) {
+        overlayUnlockedInput.disabled = !isDesktopApp;
+    }
 }
 
 function bindUiEventHandlers() {
     nicknameInput.addEventListener('input', handleNicknameInput);
     if (overlayEnabledInput) {
         overlayEnabledInput.addEventListener('change', handleOverlayEnabledChange);
+    }
+    if (overlayUnlockedInput) {
+        overlayUnlockedInput.addEventListener('change', handleOverlayUnlockedChange);
     }
     serverUrlInput.addEventListener('change', handleServerUrlChange);
     pushToTalkHotkeyInput.addEventListener('keydown', handlePushToTalkHotkeyCapture);
@@ -391,6 +434,12 @@ function handleServerUrlChange(event) {
 function handleOverlayEnabledChange(event) {
     overlayEnabled = Boolean(event.target.checked);
     saveOverlayEnabled(overlayEnabled);
+    publishOverlayState();
+}
+
+function handleOverlayUnlockedChange(event) {
+    overlayUnlocked = Boolean(event.target.checked);
+    saveOverlayUnlocked(overlayUnlocked);
     publishOverlayState();
 }
 
@@ -992,6 +1041,7 @@ function publishOverlayState() {
     const users = getOverlayUsers();
     desktopApi.setOverlayState({
         enabled: overlayEnabled,
+        unlocked: overlayUnlocked,
         users,
     });
 }
